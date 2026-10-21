@@ -237,6 +237,31 @@ make all        # sve gore odjednom, redom
 
 Spore korake (preuzimanje Ubuntu slike, `packer build`, `kind create cluster`) pokrenuti prije predavanja.
 
+### Zivost i spremnost web aplikacije (s3-p4)
+
+`/health` provjerava da web proces odgovara. `/ready` provjerava i vezu s
+Redisom, jer bez njega brojac ne moze raditi. Provjera koristi `PING` i ne
+povecava broj posjeta. Timeout za povezivanje i cekanje odgovora je po 0.5 s.
+
+Iz korijena repozitorija, nakon pokretanja primjera:
+
+```bash
+curl -i http://localhost:8080/health  # 200
+curl -i http://localhost:8080/ready   # 200
+docker compose -f s3/p4/compose.yaml stop redis
+curl -i http://localhost:8080/health  # i dalje 200: web proces radi
+curl -i http://localhost:8080/ready   # 503: Redis nije dostupan
+docker compose -f s3/p4/compose.yaml start redis
+# Kada Redis ponovo prihvata veze:
+curl -i http://localhost:8080/ready   # ponovo 200, bez restarta web aplikacije
+```
+
+Poslije demonstracije Redis treba ostaviti pokrenut. Ovaj endpoint sam ne
+zaustavlja promet. U Kubernetesu bi se povezao s `readinessProbe`, koja
+nespreman pod uklanja iz odredista Servicea. Postojeci Docker `HEALTHCHECK`
+ostaje na `/health`; pad Redisa nije razlog za restart web procesa.
+Provjera spremnosti ne zamjenjuje obradu gresaka u korisnickim zahtjevima.
+
 ## Dokumentacija
 
 Sillabus i bilješke s predavanja su u [`docs/`](docs/) (PDF): [`RuO-Syllabus.pdf`](docs/RuO-Syllabus.pdf), `RuO - Lesson1.pdf` (sedmica 1), `RuO - Lesson2.pdf` i `RuO - Lesson3.pdf`. Izvor (HTML) je u `docs/src/`, a PDF se generiše naredbom
