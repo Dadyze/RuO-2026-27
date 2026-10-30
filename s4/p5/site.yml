@@ -1,0 +1,14 @@
+- name: Vatrozid rutera iz podataka
+  hosts: rtr
+  become: true
+  roles:
+    - firewall
+
+- name: SSH klijent - pristup unutrašnjim mašinama samo preko bastiona
+  hosts: rtr
+  tasks:
+    - name: ssh konfiguracija s ProxyJump
+      ansible.builtin.template:
+        src: ssh_config.j2
+        dest: "{{ ssh_config_dest | default('~/.ssh/ruo-config') }}"
+        mode: "0600"

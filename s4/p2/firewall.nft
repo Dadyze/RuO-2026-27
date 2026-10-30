@@ -1,0 +1,47 @@
+#!/usr/sbin/nft -f
+# s4/p2: segmentacija web/app/db na ruteru (ruo-rtr). Učitava se atomski: cijela datoteka ili ništa.
+# Idiom "table ...; delete table ...; table ... { }" čini učitavanje idempotentnim bez diranja tuđih tabela.
+
+define web    = 10.40.1.0/24
+define app    = 10.40.2.0/24
+define db     = 10.40.3.0/24
+define uplink = "r-up"
+define vpn_if = "wg-rtr"                         # WireGuard sučelje (s4/p3)
+
+table inet ruo
+delete table inet ruo
+
+table inet ruo {
+  set web_ports { type inet_service; elements = { 80, 443 } }
+
+  # promet KROZ ruter (između segmenata): zadano je zabrana, dozvole se nabrajaju
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+
+    ct state established,related accept          # odgovori na dozvoljene veze
+    ct state invalid drop
+
+    iifname $uplink ip daddr $web tcp dport @web_ports accept   # internet -> web: samo 80/443
+    ip saddr $web ip daddr $app tcp dport 8080 accept           # web -> app: samo aplikacijski port
+    ip saddr $app ip daddr $db  tcp dport 5432 accept           # app -> db: samo baza
+    ip saddr { $web, $app } oifname $uplink accept              # izlaz prema internetu: web i app, ne db
+    iifname $vpn_if ip daddr $app tcp dport { 22, 8080 } accept # VPN klijent -> app (SSH, aplikacija), ne db
+
+    limit rate 5/minute log prefix "ruo-drop: "                 # sve ostalo pada (policy drop)
+  }
+
+  # promet KA samom ruteru
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iifname "lo" accept
+    ct state established,related accept
+    udp dport 51820 accept                                      # WireGuard handshake (s4/p3)
+    icmp type echo-request limit rate 5/second accept
+  }
+
+  # NAT: segmenti izlaze prema uplinku s adresom rutera
+  chain postrouting {
+    type nat hook postrouting priority srcnat;
+    oifname $uplink ip saddr 10.40.0.0/16 counter masquerade
+  }
+}

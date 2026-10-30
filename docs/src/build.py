@@ -1,7 +1,7 @@
 """Generiše PDF bilješke iz HTML izvora pomoću Edge/Chrome (headless).
 
 Upotreba:  python docs/src/build.py         (iz korijena repozitorija)
-Izlaz:     docs/RuO - Lesson2.pdf, docs/RuO - Lesson3.pdf
+Izlaz:     docs/RuO - Lesson2.pdf, Lesson3.pdf, Lesson4.pdf
 """
 import os
 import re
@@ -33,7 +33,7 @@ def style_comments(src: str) -> str:
     return re.sub(r'(<div class="code[^"]*">.*?<pre>)(.*?)</pre>', pre, src, flags=re.S)
 
 
-for n in (2, 3):
+for n in (2, 3, 4):
     tmp = SRC / f"_build{n}.html"
     tmp.write_text(style_comments((SRC / f"sedmica{n}.html").read_text(encoding="utf-8")), encoding="utf-8")
     out = OUT / f"RuO - Lesson{n}.pdf"

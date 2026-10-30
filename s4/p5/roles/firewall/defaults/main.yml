@@ -1,0 +1,3 @@
+fw_nft_cmd: nft
+fw_dest: /etc/nftables.d/ruo.nft
+fw_instaliraj_paket: true

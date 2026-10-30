@@ -20,7 +20,9 @@ need_libvirt = virsh -c qemu:///system list >/dev/null 2>&1 || { echo "libvirt n
   s2-p1 s2-p1-clean s2-p2 s2-p3 s2-p3-apply s2-p3-clean \
   s2-p4 s2-p4-build s2-p4-vm s2-p4-clean \
   s3-p1 s3-p1-apply s3-p2-vault s3-p2 s3-p2-apply s3-p3 s3-p3-apply s3-p3-clean \
-  s3-p4 s3-p4-config s3-p4-persist s3-p4-clean s3-p5 s3-p5-up s3-p5-heal s3-p5-clean
+  s3-p4 s3-p4-config s3-p4-persist s3-p4-clean s3-p5 s3-p5-up s3-p5-heal s3-p5-clean \
+  s4-p1 s4-p1-up s4-p1-clean s4-p2 s4-p2-apply s4-p3 s4-p3-up s4-p3-clean s4-p4 s4-p4-up s4-p4-clean \
+  s4-p5 s4-p5-apply s4-p5-clean s4-clean
 
 ##@ Pomoć
 help: ## ovaj popis
@@ -31,7 +33,7 @@ setup: ## instalira sve alate (00-setup.sh)
 > ./00-setup.sh
 
 check: ## provjera da li su alati instalirani
-> @for t in git make terraform packer ansible docker kubectl kind virsh; do \
+> @for t in git make terraform packer ansible docker kubectl kind virsh nft wg; do \
 >   if command -v $$t >/dev/null; then printf '  \033[32mok\033[0m     %s\n' $$t; else printf '  \033[33mnema\033[0m   %s\n' $$t; fi; done
 
 run: ## make run EX=s2-p1 (isto što i make s2-p1)
@@ -160,10 +162,57 @@ s3-p5-heal: ## briše jedan Pod: Deployment ga vraća
 s3-p5-clean: ## briše kind klaster
 > kind delete cluster --name ruo
 
+##@ Sedmica 4: mreža i vatrozid kao kod (lab su Linux network namespace-ovi; naredbe -up traže sudo)
+s4-p1: ## mrežni lab: ispis naredbi (DRY=1), ništa se ne mijenja
+> DRY=1 bash s4/p1/lab.sh up
+s4-p1-up: ## [opcionalno] stvara ruter + web/app/db segmente (namespace-ovi)
+> sudo bash s4/p1/lab.sh up && sudo bash s4/p1/lab.sh status
+s4-p1-clean: ## briše lab (i sve što je iznad njega)
+> -$(MAKE) --no-print-directory s4-p3-clean s4-p4-clean
+> -sudo bash s4/p1/lab.sh down
+
+s4-p2: ## nftables: provjera sintakse datoteke (nft -c), bez učitavanja
+> @$(call need,nft)
+> sudo nft -c -f s4/p2/firewall.nft && echo "firewall.nft je ispravan"
+s4-p2-apply: s4-p2 ## [opcionalno] učita pravila u ruter i pokrene matricu povezivosti (traži s4-p1-up)
+> @$(call banner,PRIJE: ravna mreža, sve je dozvoljeno)
+> sudo bash s4/p2/test.sh
+> sudo ip netns exec ruo-rtr nft -f s4/p2/firewall.nft
+> @$(call banner,POSLIJE: samo ono što politika dozvoljava)
+> sudo bash s4/p2/test.sh
+
+s4-p3: ## WireGuard: ispis naredbi (DRY=1), ključevi se ne prave
+> DRY=1 bash s4/p3/wg.sh up
+s4-p3-up: ## [opcionalno] tunel klijent <-> ruter + test pristupa (traži s4-p1-up i s4-p2-apply)
+> sudo bash s4/p3/wg.sh up && sleep 7 && sudo bash s4/p3/wg.sh status && sudo bash s4/p3/test.sh
+s4-p3-clean: ## uklanja tunel i klijenta (ključevi ostaju u s4/p3/keys)
+> -sudo bash s4/p3/wg.sh down
+
+s4-p4: ## Linux bridge + VLAN: ispis naredbi (DRY=1)
+> DRY=1 bash s4/p4/vlan.sh up
+s4-p4-up: ## [opcionalno] bridge s vlan_filtering + test izolacije (traži kernel s 8021q i bridge VLAN podrškom)
+> sudo bash s4/p4/vlan.sh up && sudo bash s4/p4/vlan.sh status && sudo bash s4/p4/vlan.sh test
+s4-p4-clean: ## briše VLAN lab
+> -sudo bash s4/p4/vlan.sh down
+
+s4-p5: ## Ansible rola vatrozida iz podataka: syntax-check, --check --diff
+> @$(call need,ansible-playbook)
+> cd s4/p5 && ansible-playbook site.yml --syntax-check
+> cd s4/p5 && ansible-playbook site.yml $(ANSIBLE_ARGS) -e '{"fw_instaliraj_paket": false, "ssh_config_dest": "/tmp/ruo-ssh-config"}' --check --diff
+s4-p5-apply: ## [opcionalno] primijeni rolu na ruter iz labu, dva puta (idempotentnost), pa testovi (traži s4-p1-up)
+> @$(call banner,1. izvrsavanje: ocekujemo changed > 0)
+> cd s4/p5 && ansible-playbook site.yml $(ANSIBLE_ARGS) -e '{"fw_instaliraj_paket": false, "ssh_config_dest": "/tmp/ruo-ssh-config"}'
+> @$(call banner,2. izvrsavanje: ocekujemo changed=0)
+> cd s4/p5 && ansible-playbook site.yml $(ANSIBLE_ARGS) -e '{"fw_instaliraj_paket": false, "ssh_config_dest": "/tmp/ruo-ssh-config"}'
+> sudo bash s4/p2/test.sh && sudo bash s4/p5/test-bastion.sh && cat /tmp/ruo-ssh-config
+s4-p5-clean: ## briše generisana pravila i ssh konfiguraciju
+> sudo rm -f /etc/nftables.d/ruo.nft /tmp/ruo-ssh-config
+s4-clean: s4-p1-clean s4-p5-clean ## čisti cijelu sedmicu 4
+
 ##@ Skupno
-all: check s2-p1 s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4 s3-p5 ## svi primjeri redom, sekvencijalno (idempotentno: može se ponoviti)
+all: check s2-p1 s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4 s3-p5 s4-p1 s4-p2 s4-p3 s4-p4 s4-p5 ## svi primjeri redom, sekvencijalno (idempotentno: može se ponoviti)
 > @$(call banner,SVI PRIMJERI ZAVRSENI)
 safe-all: ## sve što ne mijenja sistem (plan/validate/--check/dry-run)
-> $(MAKE) --no-print-directory s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4-config s3-p5
+> $(MAKE) --no-print-directory s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4-config s3-p5 s4-p1 s4-p2 s4-p3 s4-p4 s4-p5
 clean-all: ## čišćenje svih primjera
-> -$(MAKE) --no-print-directory s2-p1-clean s2-p3-clean s2-p4-clean s3-p3-clean s3-p4-clean s3-p5-clean
+> -$(MAKE) --no-print-directory s2-p1-clean s2-p3-clean s2-p4-clean s3-p3-clean s3-p4-clean s3-p5-clean s4-clean

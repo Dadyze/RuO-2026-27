@@ -10,6 +10,7 @@ prava datoteka, a pokreće se jednom naredbom `make`, pa se na nastavi odmah vid
 |---|---|---|
 | 2 | Uvod u IaC: virtualne mašine kao kod | `s2/p1` Terraform (state, drift), `s2/p2` cloud-init, `s2/p3` Terraform + libvirt VM, `s2/p4` Packer |
 | 3 | Konfiguracija i kontejneri kao kod | `s3/p1` Ansible, `s3/p2` role + Vault, `s3/p3` Terraform + Ansible, `s3/p4` Dockerfile + Compose, `s3/p5` Kubernetes |
+| 4 | Mrežna konfiguracija i firewall kao kod | `s4/p1` mrežni lab (namespace-ovi), `s4/p2` nftables, `s4/p3` WireGuard, `s4/p4` bridge + VLAN, `s4/p5` Ansible rola vatrozida + bastion |
 
 Bilješke (PDF) uz primjere su u mapi [`docs/`](docs/). Svaki primjer ima i objašnjenje pozadine (KVM/QEMU/libvirt, cloud-init, Ansible, Docker, Kubernetes) u bilješkama.
 
@@ -108,7 +109,7 @@ Naredbe se ispisuju prije izvršavanja, da se vidi šta se radi. Pokrenite ga od
 make help
 ```
 
-`make help` ispisuje sve ciljeve. Primjeri se pokreću redom (`s2-p2`, `s2-p3`, `s2-p4`, `s3-p1` do `s3-p5`), a sve odjednom radi
+`make help` ispisuje sve ciljeve. Primjeri se pokreću redom (`s2-p2`, `s2-p3`, `s2-p4`, `s3-p1` do `s3-p5`, `s4-p1` do `s4-p5`), a sve odjednom radi
 `make all`. Detalji i očekivani ishodi su u odjeljku "Upotreba make-a" niže. Za `s3-p4` mora raditi Docker Desktop.
 
 ### 9. Čišćenje
@@ -132,6 +133,7 @@ Sve se pokreće u **Linux okruženju**: Ubuntu 24.04 ili **WSL2** na Windowsu (o
 | Packer | `s2/p4` | HashiCorp apt repozitorij (niže) |
 | libvirt / KVM | `s2/p3`, `s2/p4`, `s3/p3` | samo za primjere s virtualnim mašinama |
 | `kubectl`, `kind` | `s3/p5` | samo za pokretanje klastera; dry-run radi i bez njih |
+| `ip`, `nft`, `wg` | `s4/*` | iproute2, nftables, wireguard-tools (instalira `00-setup.sh`); `-up` ciljevi traže `sudo` |
 
 Za većinu primjera **nije potreban račun u oblaku i ništa ne košta**. Nijedan primjer ne koristi plaćene usluge.
 
@@ -150,7 +152,7 @@ Sve potrebno postavlja jedna skripta (Ubuntu/Debian ili WSL2 Ubuntu). Pokreće s
 3. dodaje HashiCorp repozitorij i instalira **Terraform** i **Packer**,
 4. instalira KVM/libvirt, dodaje korisnika u grupe `libvirt`/`kvm`, pokreće `libvirtd` i pravi pool i mrežu `default`,
 5. provjerava Docker (sa `INSTALL_DOCKER=1` ga instalira ako ga nema),
-6. instalira `kubectl` i `kind`,
+6. instalira `kubectl` i `kind`, te `iproute2`, `nftables` i `wireguard-tools` za mrežne primjere (sedmica 4),
 7. pravi SSH ključ `~/.ssh/id_ed25519` ako ne postoji (koristi se u VM primjerima),
 8. ispisuje provjeru instaliranih alata.
 
@@ -210,6 +212,12 @@ Izuzeci koji se mogu bezbrijetno izvršiti jer rade lokalno i ne koštaju ništa
 | `make s3-p4-persist` / `s3-p4-clean` | podaci u volumenu / čišćenje | lokalni kontejneri |
 | `make s3-p5` | Kubernetes manifest, dry-run | ne |
 | `make s3-p5-up` / `s3-p5-heal` / `s3-p5-clean` | kind klaster, samoizlječenje, brisanje | lokalni kontejneri |
+| `make s4-p1` / `s4-p1-up` | mrežni lab: ispis naredbi / ruter i segmenti web/app/db (namespace-ovi) | ne / da (namespace-ovi, sudo) |
+| `make s4-p2` / `s4-p2-apply` | nftables: `nft -c` / učitavanje i matrica povezivosti PRIJE i POSLIJE | ne / da (ruter laba) |
+| `make s4-p3` / `s4-p3-up` | WireGuard: ispis naredbi / tunel + test pristupa | ne / da |
+| `make s4-p4` / `s4-p4-up` | bridge + VLAN: ispis naredbi / izvršavanje (traži 8021q) | ne / da |
+| `make s4-p5` / `s4-p5-apply` | Ansible rola vatrozida: `--check` / dva izvršavanja + testovi (bastion) | ne / da |
+| `make s4-clean` | čisti sve iz sedmice 4 | uklanja |
 | `make all` | svi primjeri redom (sekvencijalno, idempotentno) | lokalna datoteka i kontejneri |
 | `make safe-all` | sve što ne mijenja sistem | ne |
 | `make clean-all` | čisti sve primjere | uklanja |
@@ -232,6 +240,7 @@ make s3-p2      # 6. role + Vault
 make s3-p3      # 7. Terraform + Ansible (plan)
 make s3-p4      # 8. Dockerfile + Compose
 make s3-p5      # 9. Kubernetes (dry-run)
+make s4-p1      # 10. mrežni lab (ispis naredbi), zatim s4-p2 ... s4-p5
 make all        # sve gore odjednom, redom
 ```
 
@@ -239,7 +248,7 @@ Spore korake (preuzimanje Ubuntu slike, `packer build`, `kind create cluster`) p
 
 ## Dokumentacija
 
-Sillabus i bilješke s predavanja su u [`docs/`](docs/) (PDF): [`RuO-Syllabus.pdf`](docs/RuO-Syllabus.pdf), `RuO - Lesson1.pdf` (sedmica 1), `RuO - Lesson2.pdf` i `RuO - Lesson3.pdf`. Izvor (HTML) je u `docs/src/`, a PDF se generiše naredbom
+Sillabus i bilješke s predavanja su u [`docs/`](docs/) (PDF): [`RuO-Syllabus.pdf`](docs/RuO-Syllabus.pdf), `RuO - Lesson1.pdf` (sedmica 1), `RuO - Lesson2.pdf`, `RuO - Lesson3.pdf` i `RuO - Lesson4.pdf`. Izvor (HTML) je u `docs/src/`, a PDF se generiše naredbom
 `python docs/src/build.py` (potreban Edge, Chrome ili Chromium).
 
 ## Tajne i Git
@@ -267,9 +276,10 @@ Makefile        # make help
 docs/           # bilješke s predavanja (PDF)
 s2/p1..p4/      # sedmica 2: Terraform, cloud-init, libvirt VM, Packer
 s3/p1..p5/      # sedmica 3: Ansible, role + Vault, Terraform + Ansible, Compose, Kubernetes
+s4/p1..p5/      # sedmica 4: mrežni lab, nftables, WireGuard, bridge + VLAN, Ansible rola vatrozida
 ```
 
 Status provjere: `make help`, `make check`, `s2-p1` (cijeli tok s driftom), `s2-p2`, `s3-p1` (ping, syntax-check) i
 `s3-p2` (Vault) su izvršeni; primjeri koji traže KVM, Packer, Docker daemon ili klaster (`s2-p3`, `s2-p4`, `s3-p3`,
-`s3-p4`, `s3-p5`) napisani su prema bilješkama, ali nisu pokretani u razvojnom okruženju. Ako nešto ne radi, prvo ih
+`s3-p4`, `s3-p5`) napisani su prema bilješkama, ali nisu pokretani u razvojnom okruženju. Sedmica 4: `s4-p1`, `s4-p2`, `s4-p3` i `s4-p5` su izvršeni od početka do kraja (lab, vatrozid s matricom povezivosti, WireGuard tunel, Ansible rola dva puta i test bastiona); `s4-p4` (bridge + VLAN) je provjeren samo kao ispis naredbi (`DRY=1`) jer razvojna jezgra nema podršku za 802.1Q i bridge VLAN. Ako nešto ne radi, prvo ih
 pokrenuti u `plan`/`validate` obliku i javiti asistentu.

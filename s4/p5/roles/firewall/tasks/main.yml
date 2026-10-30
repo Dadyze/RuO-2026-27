@@ -1,0 +1,14 @@
+- name: nftables je instaliran
+  ansible.builtin.apt: { name: nftables, state: present, cache_valid_time: 3600 }
+  when: fw_instaliraj_paket
+
+- name: direktorij za pravila
+  ansible.builtin.file: { path: "{{ fw_dest | dirname }}", state: directory, mode: "0755" }
+
+- name: pravila iz šablona (provjera sintakse PRIJE zamjene datoteke)
+  ansible.builtin.template:
+    src: ruo.nft.j2
+    dest: "{{ fw_dest }}"
+    mode: "0644"
+    validate: nft -c -f %s          # neispravna datoteka nikad ne zamijeni radnu
+  notify: učitaj vatrozid

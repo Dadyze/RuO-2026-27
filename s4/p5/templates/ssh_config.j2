@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# Upotreba: ssh -F ~/.ssh/ruo-config app1
+Host bastion
+  HostName {{ fw_bastion }}
+  User {{ ssh_korisnik }}
+
+{% for ime, ip in ssh_hostovi.items() %}
+Host {{ ime }}
+  HostName {{ ip }}
+  User {{ ssh_korisnik }}
+  ProxyJump bastion
+
+{% endfor %}

@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="bs"><head><meta charset="utf-8">
+<title>RuO – Bilješke s predavanja – Sedmica 4</title>
+<link rel="stylesheet" href="style.css"></head><body>
+
+<header class="top"><img src="logo.png" alt="Univerzitet u Zenici, Politehnički fakultet"><div class="uni"><b>Univerzitet u Zenici</b><span>Politehnički fakultet</span></div></header>
+
+<div class="kicker">Bilješke s predavanja · Sedmica 4</div>
+<h1>Mrežna konfiguracija i firewall kao kod</h1>
+<p class="lead">Mreža kao kod: segmenti i usmjeravanje (<code>VPC/subnet</code>, routing, NAT), vatrozid pravilima u <code>nftables</code>, segmentacija web/app/db, bastion host, WireGuard VPN te uvod u bridge i VLAN. Pravila se opisuju datotekama i podacima, a ishod se provjerava testom povezivosti.</p>
+
+<table class="meta">
+<tr><td>Predmet</td><td>Računarstvo u oblaku</td></tr>
+<tr><td>Studij</td><td>II ciklus studija, III semestar, akademska godina 2026/27</td></tr>
+<tr><td>Nastavnik</td><td>V. prof. dr. Đulaga Hadžić</td></tr>
+<tr><td>Asistent</td><td>ass. Mr. Adin Jahić</td></tr>
+<tr><td>Termin</td><td>petak, 06.11.2026, 17:15–20:15, Kabinet 3204</td></tr>
+<tr><td>Tema</td><td>Mrežna konfiguracija i firewall kao kod</td></tr>
+<tr><td>Kod</td><td>github.com/Dadyze/RuO-2026-27 (mape <code>s4/p1</code> do <code>s4/p5</code>)</td></tr>
+</table>
+
+<section>
+<div class="kicker">Okvir nastavne jedinice</div>
+<h2>Ciljevi i način rada</h2>
+<p>U prethodne tri sedmice su mašine i servisi opisani kodom. Ostaje pitanje <em>ko s kim smije razgovarati</em>. Mreža i vatrozid su najčešći izvor grešaka i sigurnosnih propusta, a ručno podešavanje je teško ponoviti i još teže pregledati. Zato se i oni pišu kao kod: pravila su u datoteci, datoteka je u Gitu, a ishod se provjerava testom, ne pogađanjem.</p>
+<p>Za rad nije potreban račun u oblaku. Mrežni elementi (ruter, segmenti, tunel) prave se od <strong>Linux network namespace-ova</strong>, istog mehanizma na kojem se zasnivaju kontejneri iz prve sedmice. Jedan namespace je jedna izolirana mreža sa svojim sučeljima, adresama i tabelom usmjeravanja, pa tako radi i svaka mašina u labu.</p>
+<p>Nakon nastavne jedinice student je u stanju:</p>
+<ul>
+<li>povezati pojmove oblaka (VPC, subnet, route table, NAT, security group) s Linux alatima koji ih ostvaruju,</li>
+<li>napraviti segmentiranu mrežu s ruterom i NAT-om i objasniti put paketa kroz nju,</li>
+<li>napisati stateful vatrozid s politikom "sve zabranjeno, dozvole se nabrajaju" u <code>nftables</code> i provjeriti ga matricom povezivosti,</li>
+<li>postaviti WireGuard VPN i ograničiti šta klijent kroz njega smije dosegnuti,</li>
+<li>generisati pravila vatrozida iz podataka Ansible rolom i provjeriti idempotentnost,</li>
+<li>objasniti ulogu bastion hosta i podesiti SSH klijent da ga koristi (<code>ProxyJump</code>),</li>
+<li>objasniti razliku između L2 (bridge, VLAN) i L3 (ruter) segmentacije.</li>
+</ul>
+
+<h3>Okruženje i pokretanje</h3>
+<p>Alate za ovu sedmicu (<code>ip</code>, <code>nft</code>, <code>wg</code>) instalira <code>00-setup.sh</code>. Ako je već pokrenuta ranije, ponovo se pokrene (idempotentna je), pa se primjeri pokreću redom:</p>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 0 · početak</span></div><pre>cd ~/RuO-2026-27 &amp;&amp; git pull
+./00-setup.sh                    # dodaje iproute2, nftables, wireguard-tools
+make check                       # da li su nft i wg prisutni
+make s4-p1                       # zatim s4-p2 ... s4-p5; opcionalni koraci imaju sufiks -up / -apply</pre></div>
+<div class="note "><span class="lbl">Rad bez troškova: pregled umjesto izvršavanja</span>Osnovni cilj svakog primjera samo pokazuje šta bi se desilo: <code>DRY=1</code> ispisuje naredbe bez izvršavanja, <code>nft -c</code> provjerava sintaksu bez učitavanja, a <code>ansible-playbook --check --diff</code> prikazuje razliku. Stvarno izvršavanje ima sufiks <code>-up</code> ili <code>-apply</code>, traži <code>sudo</code> i mijenja samo mrežu u izoliranim namespace-ovima, ne mrežu računara. Sve se briše sa <code>make s4-clean</code>.</div>
+<div class="note warn"><span class="lbl">Važno</span>Primjeri <code>-up</code> kreiraju namespace-ove i učitavaju pravila, pa traže administratorska prava. Redoslijed je obavezan: <code>s4-p1-up</code> (lab), zatim <code>s4-p2-apply</code> (vatrozid), zatim <code>s4-p3-up</code> (VPN). WireGuard kernelski modul na nekim sistemima (npr. WSL2) ne postoji; skripta tada sama koristi korisnički <code>wireguard-go</code>.</div>
+</section>
+
+<section>
+<div class="kicker">1 · Pojam i pozadina</div>
+<h2>Od mašina do mreže</h2>
+<p>Mreža u oblaku se sastoji od nekoliko elemenata koje svaki pružatelj (AWS, Azure, GCP) naziva drugačije, ali rade isto. Na Linuxu svaki od njih ima konkretnu zamjenu, pa se isto razmišljanje može vježbati lokalno i besplatno.</p>
+<table class="t">
+<tr><th>Oblak (AWS / Azure)</th><th>Značenje</th><th>U ovom labu</th></tr>
+<tr><td>VPC / VNet</td><td>izolirana privatna mreža</td><td>ruter <code>ruo-rtr</code> i namespace-ovi iza njega</td></tr>
+<tr><td>Subnet</td><td>podmreža unutar VPC-a</td><td>segment <code>10.40.N.0/24</code> (namespace + veth par)</td></tr>
+<tr><td>Route table</td><td>kuda ide koji promet</td><td><code>ip route</code>, zadani put preko rutera</td></tr>
+<tr><td>Internet / NAT gateway</td><td>izlaz privatnih mašina prema internetu</td><td>uplink <code>r-up</code> + <code>masquerade</code></td></tr>
+<tr><td>Security group / NSG</td><td>stateful pravila uz mašinu ili podmrežu</td><td><code>nftables</code> lanac <code>forward</code>, zadano <code>drop</code></td></tr>
+<tr><td>Bastion host</td><td>jedina ulazna tačka za administraciju</td><td>jedna adresa s dozvolom za SSH + <code>ProxyJump</code></td></tr>
+<tr><td>VPN gateway</td><td>siguran tunel do vanjske mreže</td><td>WireGuard (<code>wg-rtr</code>)</td></tr>
+<tr><td>VLAN / L2 preklopnik</td><td>razdvajanje prometa na sloju 2</td><td>Linux <code>bridge</code> + 802.1Q</td></tr>
+</table>
+<div class="note bg"><span class="lbl">Pozadina: nftables</span>Linux vatrozid je dugo bio <code>iptables</code> (više odvojenih alata za IPv4, IPv6, ARP). <code>nftables</code> ga je zamijenio 2014. godine (jezgra 3.13): jedan alat, jedan jezik, skupovi (<em>sets</em>) i atomsko učitavanje cijele datoteke, a od Debiana 10 je i zadani. Pravila su organizovana u <strong>tabele</strong> (<code>table</code>), tabele u <strong>lance</strong> (<code>chain</code>), a lanci se vežu na <em>hook</em> u putu paketa kroz jezgru: <code>input</code> (paket za sam ruter), <code>forward</code> (paket koji prolazi kroz ruter), <code>output</code> i <code>prerouting</code>/<code>postrouting</code> (NAT). Praćenje veza (<em>connection tracking</em>, <code>ct</code>) pamti stanje, pa vatrozid dozvoljava odgovore na dozvoljene veze bez posebnog pravila.</div>
+<figure>
+<svg viewBox="0 0 720 270" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, sans-serif" font-size="12">
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#12212b"/></marker></defs>
+<rect x="8" y="100" width="120" height="56" rx="8" fill="#eef2f6" stroke="#55677a"/>
+<text x="68" y="124" text-anchor="middle" font-weight="700">Internet</text><text x="68" y="142" text-anchor="middle" fill="#55677a">host 10.40.0.1</text>
+<rect x="8" y="196" width="120" height="56" rx="8" fill="#eef2f6" stroke="#55677a"/>
+<text x="68" y="220" text-anchor="middle" font-weight="700">VPN klijent</text><text x="68" y="238" text-anchor="middle" fill="#55677a">10.99.0.2</text>
+<rect x="238" y="70" width="170" height="116" rx="8" fill="#e3f3f0" stroke="#0f766e"/>
+<text x="323" y="96" text-anchor="middle" font-weight="700">ruo-rtr</text>
+<text x="323" y="116" text-anchor="middle" fill="#55677a">ip_forward + NAT</text>
+<text x="323" y="134" text-anchor="middle" fill="#55677a">nftables (forward: drop)</text>
+<text x="323" y="152" text-anchor="middle" fill="#55677a">WireGuard wg-rtr</text>
+<g fill="#eef2f6" stroke="#55677a"><rect x="500" y="10" width="210" height="62" rx="8"/><rect x="500" y="104" width="210" height="62" rx="8"/><rect x="500" y="198" width="210" height="62" rx="8"/></g>
+<text x="605" y="36" text-anchor="middle" font-weight="700">web 10.40.1.0/24</text><text x="605" y="54" text-anchor="middle" fill="#55677a">samo 80/443 iz interneta</text>
+<text x="605" y="130" text-anchor="middle" font-weight="700">app 10.40.2.0/24</text><text x="605" y="148" text-anchor="middle" fill="#55677a">samo 8080 iz weba</text>
+<text x="605" y="224" text-anchor="middle" font-weight="700">db 10.40.3.0/24</text><text x="605" y="242" text-anchor="middle" fill="#55677a">samo 5432 iz appa, bez izlaza</text>
+<g stroke="#12212b" fill="none" marker-end="url(#a)">
+<path d="M128 128H238"/><path d="M408 100C450 100 460 50 500 44"/><path d="M408 128H500"/><path d="M408 156C450 156 460 220 500 226"/>
+<path d="M605 72V104"/><path d="M605 166V198"/>
+</g>
+<path d="M128 224C190 224 200 170 238 164" stroke="#0f766e" stroke-dasharray="5 4" fill="none" marker-end="url(#a)"/>
+<text x="183" y="206" fill="#0f766e">WireGuard</text>
+<text x="620" y="92" fill="#55677a">8080</text><text x="620" y="186" fill="#55677a">5432</text>
+</svg>
+<figcaption>Slika 1. Topologija laba: sav promet između segmenata prolazi kroz ruter, pa se politika provodi na jednom mjestu. Strelice između segmenata su jedini dozvoljeni putevi.</figcaption>
+</figure>
+<div class="note warn"><span class="lbl">Zašto segmentacija</span>Ako napadač preuzme web server, u ravnoj mreži odmah vidi i bazu. Segmentacijom je web smije dosegnuti samo kroz aplikacijski port, a bazu uopće ne. Politika "sve zabranjeno, dozvole se nabrajaju" (<em>default deny</em>) znači da zaboravljeno pravilo uzrokuje prekid veze koji se odmah primijeti, a ne tihu rupu.</div>
+</section>
+
+<section>
+<div class="kicker">2 · Primjer 1 · s4/p1</div>
+<h2>Segmenti, ruter i NAT od namespace-ova</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>Svaki segment je namespace (<code>ruo-web</code>, <code>ruo-app</code>, <code>ruo-db</code>) spojen na ruter <code>ruo-rtr</code> <strong>veth parom</strong>: virtualnim kablom čiji se jedan kraj nalazi u segmentu, a drugi u ruteru. Ruter ima po jedno sučelje u svakom segmentu (<code>.1</code> u podmreži) i uplink prema "internetu" (host). Mašine u segmentu imaju zadani put (<code>default via</code>) preko rutera. Bez <code>net.ipv4.ip_forward=1</code> ruter ne bi prosljeđivao pakete, što je čest razlog zašto "sve je spojeno, a ništa ne radi".</div>
+<div class="code long"><div class="hd"><span>bash</span><span>Isječak 1 · s4/p1/lab.sh (izvod)</span></div><pre>  # 1. ruter i uplink prema &quot;internetu&quot; (host)
+  run ip netns add ruo-rtr
+  run ip link add h-up type veth peer name r-up netns ruo-rtr
+  run ip addr add 10.40.0.1/30 dev h-up
+  run ip link set h-up up
+  run ip -n ruo-rtr addr add 10.40.0.2/30 dev r-up
+  run ip -n ruo-rtr link set lo up
+  run ip -n ruo-rtr link set r-up up
+  run ip route add 10.40.0.0/16 via 10.40.0.2          # povratni put do segmenata
+  rtr sysctl -qw net.ipv4.ip_forward=1                 # ruter prosljeđuje pakete
+  run ip -n ruo-rtr route add default via 10.40.0.1
+
+  # 2. segmenti: namespace + veth par prema ruteru + zadani put preko rutera
+  for s in $SEGMENTI; do
+    ime=&quot;${s%%:*}&quot;; n=&quot;${s##*:}&quot;
+    run ip netns add &quot;ruo-$ime&quot;
+    run ip link add &quot;r-$ime&quot; netns ruo-rtr type veth peer name eth0 netns &quot;ruo-$ime&quot;
+    run ip -n ruo-rtr addr add &quot;10.40.$n.1/24&quot; dev &quot;r-$ime&quot;
+    run ip -n ruo-rtr link set &quot;r-$ime&quot; up
+    run ip -n &quot;ruo-$ime&quot; addr add &quot;10.40.$n.2/24&quot; dev eth0
+    run ip -n &quot;ruo-$ime&quot; link set lo up
+    run ip -n &quot;ruo-$ime&quot; link set eth0 up
+    run ip -n &quot;ruo-$ime&quot; route add default via &quot;10.40.$n.1&quot;
+  done</pre></div>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 2 · pokretanje</span></div><pre>make s4-p1           # DRY=1: ispisuje naredbe, ništa ne mijenja
+make s4-p1-up        # opcionalno: stvarno pravi ruter i tri segmenta (traži sudo)</pre></div>
+<div class="out"><div class="hd">izlaz make s4-p1-up: stanje rutera (skraćeno, imena sučelja se mogu razlikovati)</div><pre>== ruo-rtr
+r-up@if16        UP             10.40.0.2/30 
+r-web@if2        UP             10.40.1.1/24 
+r-app@if2        UP             10.40.2.1/24 
+r-db@if2         UP             10.40.3.1/24 
+default via 10.40.0.1 dev r-up 
+10.40.0.0/30 dev r-up proto kernel scope link src 10.40.0.2 
+10.40.1.0/24 dev r-web proto kernel scope link src 10.40.1.1 
+10.40.2.0/24 dev r-app proto kernel scope link src 10.40.2.1 
+10.40.3.0/24 dev r-db proto kernel scope link src 10.40.3.1 </pre></div>
+<p>Ruter ima put do svake podmreže jer su mu sučelja direktno u njima (<code>proto kernel scope link</code>), a sve ostalo ide na <code>default via 10.40.0.1</code>. Za povratni put host mora znati da je <code>10.40.0.0/16</code> iza rutera; to je jedan red u skripti (<code>ip route add 10.40.0.0/16 via 10.40.0.2</code>). Isti princip vrijedi u oblaku: odgovor mora imati put nazad, a u tabeli usmjeravanja je to <em>route table</em> podmreže.</p>
+<div class="note"><span class="lbl">NAT</span>Privatne adrese (<code>10.0.0.0/8</code>) se ne usmjeravaju po internetu. <strong>Masquerade</strong> mijenja izvornu adresu paketa u adresu izlaznog sučelja rutera i pamti prevod, pa se odgovor vraća pravoj mašini. To je <em>SNAT</em> kakav radi kućni ruter i NAT gateway u oblaku. Pravilo je u lancu <code>postrouting</code> (Isječak 3).</div>
+</section>
+
+<section>
+<div class="kicker">3 · Primjer 2 · s4/p2</div>
+<h2>Vatrozid u nftables: default deny i segmentacija</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>Pravila se učitavaju u ruter, pa vrijede za sav promet između segmenata. Lanac <code>forward</code> ima <code>policy drop</code>: sve što nijedno pravilo ne dozvoljava pada. Prvo pravilo (<code>ct state established,related accept</code>) propušta odgovore na dozvoljene veze, pa je dovoljno opisati samo <em>smjer uspostave</em> veze (stateful vatrozid, kao security group u oblaku). Datoteka počinje s <code>table inet ruo</code> i <code>delete table inet ruo</code>: prvi red osigurava da tabela postoji (inače bi brisanje javilo grešku), a drugi je briše, pa učitavanje uvijek počinje od čistog stanja i može se ponavljati (<strong>idempotentnost</strong>). Cijela datoteka se učitava atomski: ili sva pravila, ili nijedno.</div>
+<div class="code long"><div class="hd"><span>nft</span><span>Isječak 3 · s4/p2/firewall.nft</span></div><pre>#!/usr/sbin/nft -f
+# s4/p2: segmentacija web/app/db na ruteru (ruo-rtr). Učitava se atomski: cijela datoteka ili ništa.
+# Idiom &quot;table ...; delete table ...; table ... { }&quot; čini učitavanje idempotentnim bez diranja tuđih tabela.
+
+define web    = 10.40.1.0/24
+define app    = 10.40.2.0/24
+define db     = 10.40.3.0/24
+define uplink = &quot;r-up&quot;
+define vpn_if = &quot;wg-rtr&quot;                         # WireGuard sučelje (s4/p3)
+
+table inet ruo
+delete table inet ruo
+
+table inet ruo {
+  set web_ports { type inet_service; elements = { 80, 443 } }
+
+  # promet KROZ ruter (između segmenata): zadano je zabrana, dozvole se nabrajaju
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+
+    ct state established,related accept          # odgovori na dozvoljene veze
+    ct state invalid drop
+
+    iifname $uplink ip daddr $web tcp dport @web_ports accept   # internet -&gt; web: samo 80/443
+    ip saddr $web ip daddr $app tcp dport 8080 accept           # web -&gt; app: samo aplikacijski port
+    ip saddr $app ip daddr $db  tcp dport 5432 accept           # app -&gt; db: samo baza
+    ip saddr { $web, $app } oifname $uplink accept              # izlaz prema internetu: web i app, ne db
+    iifname $vpn_if ip daddr $app tcp dport { 22, 8080 } accept # VPN klijent -&gt; app (SSH, aplikacija), ne db
+
+    limit rate 5/minute log prefix &quot;ruo-drop: &quot;                 # sve ostalo pada (policy drop)
+  }
+
+  # promet KA samom ruteru
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iifname &quot;lo&quot; accept
+    ct state established,related accept
+    udp dport 51820 accept                                      # WireGuard handshake (s4/p3)
+    icmp type echo-request limit rate 5/second accept
+  }
+
+  # NAT: segmenti izlaze prema uplinku s adresom rutera
+  chain postrouting {
+    type nat hook postrouting priority srcnat;
+    oifname $uplink ip saddr 10.40.0.0/16 counter masquerade
+  }
+}</pre></div>
+<table class="t">
+<tr><th>Pojam</th><th>Značenje</th></tr>
+<tr><td><code>table inet ruo</code></td><td>kontejner za lance; <code>inet</code> pokriva IPv4 i IPv6 jednim skupom pravila</td></tr>
+<tr><td><code>chain ... hook forward</code></td><td>lanac vezan na tačku u jezgri; <code>priority</code> određuje redoslijed među lancima na istom hooku</td></tr>
+<tr><td><code>policy drop</code></td><td>zadana odluka kad nijedno pravilo ne pogodi paket</td></tr>
+<tr><td><code>ct state</code></td><td>stanje veze iz connection trackinga (<code>established</code>, <code>related</code>, <code>invalid</code>)</td></tr>
+<tr><td><code>set web_ports</code></td><td>imenovani skup (portova, adresa); mijenja se na jednom mjestu</td></tr>
+<tr><td><code>define</code></td><td>varijabla na nivou datoteke, razrješava se pri učitavanju</td></tr>
+<tr><td><code>masquerade</code></td><td>NAT koji koristi adresu izlaznog sučelja (lanac <code>postrouting</code>)</td></tr>
+</table>
+<div class="note warn"><span class="lbl">Granica: više tabela</span>Paket mora proći <em>sve</em> lance na istom hooku. <code>accept</code> u jednoj tabeli završava samo taj lanac, pa druga tabela s <code>policy drop</code> i dalje može odbaciti isti paket. Zato se dozvola dodaje u tabelu koja zabranjuje (kao u Primjeru 3), a ne u zasebnu.</div>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 4 · pokretanje</span></div><pre>make s4-p2           # nft -c: provjera sintakse bez učitavanja
+make s4-p2-apply     # opcionalno: matrica PRIJE pa POSLIJE učitavanja (traži s4-p1-up)</pre></div>
+<p>Matrica povezivosti (<code>s4/p2/test.sh</code>) na svako odredište postavi TCP slušaoca, pa pokuša vezu iz zadanog izvora. Prva kolona je izvor, zatim odredište i port, ishod i očekivanje iz politike. Prije vatrozida je mreža ravna i sve prolazi (šest razlika od politike), a poslije je ishod jednak politici u svih deset slučajeva:</p>
+<div class="out"><div class="hd">izlaz PRIJE učitavanja firewall.nft</div><pre>  host   -&gt; 10.40.1.2  :80     dozvoljeno  (očekivano: dozvoljeno) ok
+  host   -&gt; 10.40.2.2  :8080   dozvoljeno  (očekivano: blokirano ) RAZLIKA
+  host   -&gt; 10.40.3.2  :5432   dozvoljeno  (očekivano: blokirano ) RAZLIKA
+  web    -&gt; 10.40.2.2  :8080   dozvoljeno  (očekivano: dozvoljeno) ok
+  web    -&gt; 10.40.2.2  :22     dozvoljeno  (očekivano: blokirano ) RAZLIKA
+  web    -&gt; 10.40.3.2  :5432   dozvoljeno  (očekivano: blokirano ) RAZLIKA
+  app    -&gt; 10.40.3.2  :5432   dozvoljeno  (očekivano: dozvoljeno) ok
+  app    -&gt; 10.40.3.2  :22     dozvoljeno  (očekivano: blokirano ) RAZLIKA
+  web    -&gt; 10.40.0.1  :9000   dozvoljeno  (očekivano: dozvoljeno) ok
+  db     -&gt; 10.40.0.1  :9000   dozvoljeno  (očekivano: blokirano ) RAZLIKA</pre></div>
+<div class="out"><div class="hd">izlaz POSLIJE učitavanja firewall.nft</div><pre>  host   -&gt; 10.40.1.2  :80     dozvoljeno  (očekivano: dozvoljeno) ok
+  host   -&gt; 10.40.2.2  :8080   blokirano   (očekivano: blokirano ) ok
+  host   -&gt; 10.40.3.2  :5432   blokirano   (očekivano: blokirano ) ok
+  web    -&gt; 10.40.2.2  :8080   dozvoljeno  (očekivano: dozvoljeno) ok
+  web    -&gt; 10.40.2.2  :22     blokirano   (očekivano: blokirano ) ok
+  web    -&gt; 10.40.3.2  :5432   blokirano   (očekivano: blokirano ) ok
+  app    -&gt; 10.40.3.2  :5432   dozvoljeno  (očekivano: dozvoljeno) ok
+  app    -&gt; 10.40.3.2  :22     blokirano   (očekivano: blokirano ) ok
+  web    -&gt; 10.40.0.1  :9000   dozvoljeno  (očekivano: dozvoljeno) ok
+  db     -&gt; 10.40.0.1  :9000   blokirano   (očekivano: blokirano ) ok</pre></div>
+<div class="code"><div class="hd"><span>nft</span><span>Isječak 5 · nft list chain inet ruo forward (stanje u jezgri)</span></div><pre>table inet ruo {
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    ct state established,related accept
+    ct state invalid drop
+    iifname &quot;r-up&quot; ip daddr 10.40.1.0/24 tcp dport @web_ports accept
+    ip saddr 10.40.1.0/24 ip daddr 10.40.2.0/24 tcp dport 8080 accept
+    ip saddr 10.40.2.0/24 ip daddr 10.40.3.0/24 tcp dport 5432 accept
+    ip saddr { 10.40.1.0-10.40.2.255 } oifname &quot;r-up&quot; accept
+    iifname &quot;wg-rtr&quot; ip daddr 10.40.2.0/24 tcp dport { 22, 8080 } accept
+    limit rate 5/minute burst 5 packets log prefix &quot;ruo-drop: &quot;
+  }
+}</pre></div>
+<div class="note "><span class="lbl">Šta jezgra radi s pravilima</span>Ispis stanja se razlikuje od izvorne datoteke: <code>@web_ports</code> ostaje skup, a lista <code>{ $web, $app }</code> je spojena u interval <code>10.40.1.0-10.40.2.255</code> jer su podmreže susjedne. Smisao je isti, ali treba znati čitati ispis. Brojači (<code>counter</code>) se mogu dodati pravilima da se vidi koliko je paketa pogodilo koje pravilo, što je prvi alat za otkrivanje zašto veza ne radi.</div>
+</section>
+
+<section>
+<div class="kicker">4 · Primjer 3 · s4/p3</div>
+<h2>WireGuard VPN: tunel s ograničenim pristupom</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>WireGuard je VPN ugrađen u Linux od jezgre 5.6 (2020). Za razliku od starijih rješenja (OpenVPN, IPsec) ima malo koda i malo opcija: svaki učesnik ima <strong>par ključeva</strong>, a konfiguracija je lista <em>peerova</em>. Promet ide kroz UDP, a sučelje (<code>wg-rtr</code>) se ponaša kao obično mrežno sučelje. Središnji pojam je <code>allowed-ips</code>: to je istovremeno <em>tabela usmjeravanja</em> (šta se šalje kroz tunel) i <em>kontrola pristupa</em> (s kojih adresa se paketi prihvataju od tog peera). Ovdje klijent kroz tunel dobija samo podmrežu <code>app</code>; web i db nisu u njegovom <code>allowed-ips</code>, pa za njih ne postoji ni put.</div>
+<div class="code long"><div class="hd"><span>bash</span><span>Isječak 6 · s4/p3/wg.sh (izvod)</span></div><pre>  # WireGuard sučelje na ruteru: tunelska mreža 10.99.0.0/24, UDP 51820
+  wg_sucelje ruo-rtr wg-rtr
+  run ip netns exec ruo-rtr wg set wg-rtr listen-port 51820 private-key &quot;$DIR/rtr.key&quot; \
+        peer &quot;$(pub klijent)&quot; allowed-ips 10.99.0.2/32
+  run ip -n ruo-rtr addr add 10.99.0.1/24 dev wg-rtr
+  run ip -n ruo-rtr link set wg-rtr up
+
+  # klijent: sve za 10.40.2.0/24 (app) ide kroz tunel, ne cijeli internet (split tunnel)
+  wg_sucelje &quot;$KLIJENT&quot; wg-kl
+  run ip netns exec &quot;$KLIJENT&quot; wg set wg-kl private-key &quot;$DIR/klijent.key&quot; \
+        peer &quot;$(pub rtr)&quot; endpoint 10.40.9.1:51820 allowed-ips 10.99.0.1/32,10.40.2.0/24 persistent-keepalive 5
+  run ip -n &quot;$KLIJENT&quot; addr add 10.99.0.2/24 dev wg-kl
+  run ip -n &quot;$KLIJENT&quot; link set wg-kl up
+  run ip -n &quot;$KLIJENT&quot; route add 10.40.2.0/24 dev wg-kl</pre></div>
+<div class="note warn"><span class="lbl">Ključevi</span>Privatni ključ ne napušta svoju mašinu, a razmjenjuju se samo javni. Skripta ih pravi u <code>s4/p3/keys/</code>, koji je u <code>.gitignore</code>. Pravi VPN s privatnim ključem u repozitoriju je jedna od najčešćih grešaka; tajne pripadaju Vaultu iz sedmice 3 ili menadžeru tajni.</div>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 7 · pokretanje</span></div><pre>make s4-p3           # DRY=1: ispisuje naredbe, ključevi se ne prave
+make s4-p3-up        # opcionalno: tunel + test pristupa (traži s4-p1-up i s4-p2-apply)</pre></div>
+<div class="out"><div class="hd">izlaz wg show wg-rtr (ruter, nakon uspostave tunela)</div><pre>== ruo-rtr
+interface: wg-rtr
+  public key: WsE78C8EYjTlIlSl7eX08VHMmRP5pZe89UF7gYjZL1A=
+  private key: (hidden)
+  listening port: 51820
+
+peer: 62Qj7dkX50NfblT3FeOd0JrqDcQJq6Aapo6om+liESc=
+  endpoint: 10.40.9.2:38238
+  allowed ips: 10.99.0.2/32
+  latest handshake: 7 seconds ago
+  transfer: 212 B received, 92 B sent</pre></div>
+<div class="out"><div class="hd">izlaz s4/p3/test.sh</div><pre>  klijent -&gt; 10.40.2.2  :8080   dozvoljeno  (očekivano: dozvoljeno) ok
+  klijent -&gt; 10.40.3.2  :5432   blokirano   (očekivano: blokirano ) ok
+  klijent -&gt; 10.40.1.2  :80     blokirano   (očekivano: blokirano ) ok
+
+  promet kroz tunel (ruter): 596 B primljeno, 380 B poslano</pre></div>
+<p>Tunel se uspostavlja <em>tek kad prođe prvi promet</em> (<code>latest handshake</code> prije toga nije prikazan), a <code>persistent-keepalive</code> održava vezu kroz NAT. Test pokazuje da klijent doseže <code>app</code>, ali ne i <code>db</code> (nema puta u tunelu ni pravila u vatrozidu) ni <code>web</code> (nije u <code>allowed-ips</code>), pa su isključena dva nezavisna sloja zaštite.</p>
+<div class="note "><span class="lbl">Šta se desi ako se zaboravi pravilo</span>Prije nego što su u <code>firewall.nft</code> dodani <code>udp dport 51820 accept</code> i pravilo za <code>wg-rtr</code>, handshake nije prolazio: klijent je slao, ali u <code>wg show</code> nije bilo ni <code>latest handshake</code>, ni primljenih bajtova. Vatrozid nije prijavio grešku, paketi su tiho pali (<code>policy drop</code>). Tako izgleda najčešći problem s VPN-om, a provjerava se redom: tunel, vatrozid na ulazu (<code>input</code>), vatrozid za prosljeđivanje (<code>forward</code>), ruta.</div>
+</section>
+
+<section>
+<div class="kicker">5 · Primjer 4 · s4/p4</div>
+<h2>Bridge i VLAN: segmentacija na sloju 2</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>Do sada je segmentacija bila na sloju 3: ruter razdvaja podmreže i vatrozid odlučuje šta prolazi. <strong>Bridge</strong> je virtualni preklopnik (sloj 2): okvire prosljeđuje između portova prema MAC adresama. <strong>VLAN</strong> (IEEE 802.1Q) dijeli taj preklopnik na više odvojenih L2 domena: okvir nosi 4-bajtnu oznaku s identifikatorom VLAN-a (12 bita, vrijednosti 1 do 4094) i preklopnik ga isporučuje samo portovima istog VLAN-a. <em>Pristupni</em> (<code>access</code>) port ne vidi oznake: preklopnik sam stavlja neoznačene okvire u VLAN. <em>Trunk</em> port nosi više VLAN-ova na istoj žici, pa mašina na drugoj strani razdvaja promet podinterfejsima (<code>eth0.10</code>, <code>eth0.20</code>). Mašine u različitim VLAN-ovima ne mogu razgovarati bez rutera, što je ista ideja kao segmenti iz Primjera 1, ali ostvarena na sloju 2.</div>
+<div class="code long"><div class="hd"><span>bash</span><span>Isječak 8 · s4/p4/vlan.sh (izvod)</span></div><pre>port() { # ime  vlan  ip      pristupni port: pakete bez oznake sklopka sama stavlja u VLAN
+  run ip netns add &quot;ruo-$1&quot;
+  run ip link add &quot;p-$1&quot; netns ruo-sw type veth peer name eth0 netns &quot;ruo-$1&quot;
+  sw link set &quot;p-$1&quot; master br0
+  sw link set &quot;p-$1&quot; up
+  run bridge -n ruo-sw vlan add dev &quot;p-$1&quot; vid &quot;$2&quot; pvid untagged   # ulazni okvir bez oznake -&gt; VLAN $2
+  run bridge -n ruo-sw vlan del dev &quot;p-$1&quot; vid 1                    # ukloni zadani VLAN 1 s porta
+  run ip -n &quot;ruo-$1&quot; addr add &quot;$3&quot; dev eth0
+  run ip -n &quot;ruo-$1&quot; link set lo up
+  run ip -n &quot;ruo-$1&quot; link set eth0 up
+}
+
+gore() {
+  run ip netns add ruo-sw
+  sw link add br0 type bridge vlan_filtering 1       # bez vlan_filtering bridge ignoriše VLAN oznake
+  sw link set br0 up
+  port h10a 10 10.50.10.11/24
+  port h10b 10 10.50.10.12/24
+  port h20  20 10.50.20.21/24
+
+  # trunk: okviri nose oznaku (tagged); host razdvaja VLAN-ove podinterfejsima eth0.10 i eth0.20
+  run ip netns add ruo-trk
+  run ip link add p-trk netns ruo-sw type veth peer name eth0 netns ruo-trk
+  sw link set p-trk master br0
+  sw link set p-trk up
+  run bridge -n ruo-sw vlan add dev p-trk vid 10
+  run bridge -n ruo-sw vlan add dev p-trk vid 20
+  run bridge -n ruo-sw vlan del dev p-trk vid 1
+  run ip -n ruo-trk link set lo up
+  run ip -n ruo-trk link set eth0 up
+  run ip -n ruo-trk link add link eth0 name eth0.10 type vlan id 10
+  run ip -n ruo-trk link add link eth0 name eth0.20 type vlan id 20
+  run ip -n ruo-trk addr add 10.50.10.1/24 dev eth0.10
+  run ip -n ruo-trk addr add 10.50.20.1/24 dev eth0.20
+  run ip -n ruo-trk link set eth0.10 up
+  run ip -n ruo-trk link set eth0.20 up
+}</pre></div>
+<table class="t">
+<tr><th>Izvor</th><th>Odredište</th><th>Očekivano</th><th>Zašto</th></tr>
+<tr><td>h10a</td><td>h10b (VLAN 10)</td><td>dozvoljeno</td><td>isti VLAN, ista L2 domena</td></tr>
+<tr><td>h10a</td><td>h20 (VLAN 20)</td><td>blokirano</td><td>drugi VLAN, nema L2 puta ni rutera</td></tr>
+<tr><td>h10a</td><td>trunk host, adresa u VLAN-u 10</td><td>dozvoljeno</td><td>trunk nosi oznaku 10</td></tr>
+<tr><td>h20</td><td>trunk host, adresa u VLAN-u 20</td><td>dozvoljeno</td><td>trunk nosi i oznaku 20 na istoj žici</td></tr>
+<tr><td>h10a</td><td>trunk host, adresa u VLAN-u 20</td><td>blokirano</td><td>slušalac postoji, ali je u drugom VLAN-u</td></tr>
+</table>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 9 · pokretanje</span></div><pre>make s4-p4           # DRY=1: ispisuje naredbe
+make s4-p4-up        # opcionalno: bridge, VLAN-ovi i test izolacije
+make s4-p4-clean</pre></div>
+<div class="note warn"><span class="lbl">Status provjere</span>Ovaj primjer traži jezgru s modulom <code>8021q</code> i bridge podrškom za <code>vlan_filtering</code>. Redovna Ubuntu jezgra ih ima; u WSL2 treba provjeriti naredbom <code>ip link add link eth0 name eth0.10 type vlan id 10</code>. Primjer je napisan prema bilješkama i provjeren u obliku ispisa naredbi (<code>DRY=1</code>), ali <strong>nije izvršen do kraja</strong> u razvojnom okruženju (jezgra bez te podrške), pa tablica očekivanja iznad nije potvrđena izlazom. Ako nešto ne radi, prvo pokrenuti <code>make s4-p4</code> i javiti asistentu.</div>
+</section>
+
+<section>
+<div class="kicker">6 · Primjer 5 · s4/p5</div>
+<h2>Vatrozid iz podataka: Ansible rola, bastion i SSH</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>Ručno pisanje pravila ne skalira: dodavanje nove usluge znači izmjenu više redova na više mjesta. Ovdje se politika opisuje <strong>podacima</strong> (koji segment smije kojem, na kojem portu), a šablon ih pretvara u <code>nftables</code>. Tako se pravila pregledaju kao podaci (koji je segment dobio koji pristup), a generisanje je jedno mjesto koje se testira. Rola koristi alate iz sedmice 3: šablon (Jinja2), handler i <code>validate</code>, kojim se izgenerisana datoteka provjerava <em>prije</em> nego što zamijeni radnu.</div>
+<div class="code long"><div class="hd"><span>yaml</span><span>Isječak 10 · s4/p5/group_vars/rtr/vars.yml</span></div><pre># Politika mreže kao PODACI: pravila se mijenjaju ovdje, a šablon ih pretvara u nftables.
+fw_uplink: r-up
+fw_vpn_if: wg-rtr
+fw_vpn_port: 51820
+
+fw_segmenti:                     # ime: podmreža
+  web: 10.40.1.0/24
+  app: 10.40.2.0/24
+  db: 10.40.3.0/24
+
+fw_javno:                        # internet -&gt; segment (samo navedeni portovi)
+  - { do: web, proto: tcp, portovi: [80, 443] }
+
+fw_pravila:                      # segment -&gt; segment (slojevi: web -&gt; app -&gt; db)
+  - { od: web, do: app, proto: tcp, portovi: [8080] }
+  - { od: app, do: db,  proto: tcp, portovi: [5432] }
+
+fw_bastion: 10.40.1.10           # jedina adresa s koje je dozvoljen SSH admin pristup app i db slojevima
+fw_admin:
+  - { do: app, proto: tcp, portovi: [22] }
+  - { do: db,  proto: tcp, portovi: [22] }
+
+fw_izlaz: [web, app]             # segmenti kojima je dozvoljen izlaz prema internetu (db nije)
+fw_vpn:                          # VPN klijent -&gt; segment
+  - { do: app, proto: tcp, portovi: [22, 8080] }
+
+# Pravila se učitavaju u namespace rutera iz s4/p1; na pravom ruteru ostaje samo &quot;nft&quot;.
+fw_nft_cmd: ip netns exec ruo-rtr nft
+fw_dest: /etc/nftables.d/ruo.nft
+fw_instaliraj_paket: true
+
+# SSH klijent: unutrašnje mašine su dostupne samo preko bastiona (ProxyJump)
+ssh_korisnik: student
+ssh_hostovi:
+  app1: 10.40.2.2
+  db1: 10.40.3.2</pre></div>
+<div class="code long"><div class="hd"><span>jinja2</span><span>Isječak 11 · s4/p5/roles/firewall/templates/ruo.nft.j2 (izvod)</span></div><pre>{% macro portovi(l) %}{% if l | length == 1 %}{{ l[0] }}{% else %}{ {{ l | join(&#x27;, &#x27;) }} }{% endif %}{% endmacro %}
+table inet ruo
+delete table inet ruo
+
+table inet ruo {
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+
+    ct state established,related accept
+    ct state invalid drop
+
+{% for r in fw_javno %}
+    # internet -&gt; {{ r.do }}
+    iifname &quot;{{ fw_uplink }}&quot; ip daddr {{ fw_segmenti[r.do] }} {{ r.proto }} dport {{ portovi(r.portovi) }} accept
+{% endfor %}
+{% for r in fw_pravila %}
+    # {{ r.od }} -&gt; {{ r.do }}
+    ip saddr {{ fw_segmenti[r.od] }} ip daddr {{ fw_segmenti[r.do] }} {{ r.proto }} dport {{ portovi(r.portovi) }} accept
+{% endfor %}
+{% for r in fw_admin %}
+    # bastion -&gt; {{ r.do }} (administracija)
+    ip saddr {{ fw_bastion }} ip daddr {{ fw_segmenti[r.do] }} {{ r.proto }} dport {{ portovi(r.portovi) }} accept
+{% endfor %}
+{% for s in fw_izlaz %}
+    # izlaz: {{ s }} -&gt; internet
+    ip saddr {{ fw_segmenti[s] }} oifname &quot;{{ fw_uplink }}&quot; accept
+{% endfor %}
+{% for r in fw_vpn %}
+    # VPN -&gt; {{ r.do }}
+    iifname &quot;{{ fw_vpn_if }}&quot; ip daddr {{ fw_segmenti[r.do] }} {{ r.proto }} dport {{ portovi(r.portovi) }} accept
+{% endfor %}
+
+    limit rate 5/minute log prefix &quot;ruo-drop: &quot;
+  }</pre></div>
+<div class="code"><div class="hd"><span>yaml</span><span>Isječak 12 · s4/p5/roles/firewall/tasks/main.yml</span></div><pre>- name: nftables je instaliran
+  ansible.builtin.apt: { name: nftables, state: present, cache_valid_time: 3600 }
+  when: fw_instaliraj_paket
+
+- name: direktorij za pravila
+  ansible.builtin.file: { path: &quot;{{ fw_dest | dirname }}&quot;, state: directory, mode: &quot;0755&quot; }
+
+- name: pravila iz šablona (provjera sintakse PRIJE zamjene datoteke)
+  ansible.builtin.template:
+    src: ruo.nft.j2
+    dest: &quot;{{ fw_dest }}&quot;
+    mode: &quot;0644&quot;
+    validate: nft -c -f %s          # neispravna datoteka nikad ne zamijeni radnu
+  notify: učitaj vatrozid</pre></div>
+<div class="code"><div class="hd"><span>nft</span><span>Isječak 13 · izgenerisano: /etc/nftables.d/ruo.nft (izvod)</span></div><pre>    ct state established,related accept
+    ct state invalid drop
+
+    # internet -&gt; web
+    iifname &quot;r-up&quot; ip daddr 10.40.1.0/24 tcp dport { 80, 443 } accept
+    # web -&gt; app
+    ip saddr 10.40.1.0/24 ip daddr 10.40.2.0/24 tcp dport 8080 accept
+    # app -&gt; db
+    ip saddr 10.40.2.0/24 ip daddr 10.40.3.0/24 tcp dport 5432 accept
+    # bastion -&gt; app (administracija)
+    ip saddr 10.40.1.10 ip daddr 10.40.2.0/24 tcp dport 22 accept
+    # bastion -&gt; db (administracija)
+    ip saddr 10.40.1.10 ip daddr 10.40.3.0/24 tcp dport 22 accept
+    # izlaz: web -&gt; internet
+    ip saddr 10.40.1.0/24 oifname &quot;r-up&quot; accept
+    # izlaz: app -&gt; internet</pre></div>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 14 · pokretanje</span></div><pre>make s4-p5           # syntax-check i --check --diff (bez izmjena)
+make s4-p5-apply     # opcionalno: primjena dva puta, pa testovi (traži s4-p1-up)</pre></div>
+<div class="out"><div class="hd">izlaz 1. izvršavanja (PLAY RECAP)</div><pre>localhost : ok=6 changed=3 unreachable=0 failed=0 skipped=1 rescued=0 ignored=0</pre></div>
+<div class="out"><div class="hd">izlaz 2. izvršavanja: changed=0 = idempotentnost</div><pre>localhost : ok=5 changed=0 unreachable=0 failed=0 skipped=1 rescued=0 ignored=0</pre></div>
+<p>Pravila koja je rola izgenerisala daju isti ishod kao ručno napisana datoteka iz Primjera 2: matrica povezivosti ponovo daje deset od deset. Politika se sada mijenja u <code>vars.yml</code>, a ne u pravilima.</p>
+<h3>Bastion host</h3>
+<p>Administrativni pristup (SSH) ne treba biti otvoren prema svim mašinama. <strong>Bastion</strong> je jedna dobro čuvana mašina s koje je SSH prema app i db dozvoljen; sve ostale adrese su blokirane. U podacima je to <code>fw_bastion</code> i lista <code>fw_admin</code>, a u vatrozidu pravilo s izvorom <code>ip saddr 10.40.1.10</code>. Klijent do unutrašnjih mašina dolazi kroz bastion opcijom <code>ProxyJump</code>, bez da je ijedna od njih izravno dostupna:</p>
+<div class="code"><div class="hd"><span>sshconfig</span><span>Isječak 15 · izgenerisano: ~/.ssh/ruo-config</span></div><pre># Ansible managed
+# Upotreba: ssh -F ~/.ssh/ruo-config app1
+Host bastion
+  HostName 10.40.1.10
+  User student
+
+Host app1
+  HostName 10.40.2.2
+  User student
+  ProxyJump bastion
+
+Host db1
+  HostName 10.40.3.2
+  User student
+  ProxyJump bastion</pre></div>
+<div class="out"><div class="hd">izlaz s4/p5/test-bastion.sh (izvorna adresa mijenja ishod)</div><pre>  SSH iz 10.40.1.10 -&gt; 10.40.2.2  :22  dozvoljeno  (očekivano: dozvoljeno) ok
+  SSH iz 10.40.1.10 -&gt; 10.40.3.2  :22  dozvoljeno  (očekivano: dozvoljeno) ok
+  SSH iz 10.40.1.2  -&gt; 10.40.2.2  :22  blokirano   (očekivano: blokirano ) ok
+  SSH iz 10.40.1.2  -&gt; 10.40.3.2  :22  blokirano   (očekivano: blokirano ) ok</pre></div>
+<div class="note warn"><span class="lbl">Bastion nije dovoljan sam po sebi</span>Pravilo po izvornoj adresi štiti samo dok je adresa vjerodostojna. Bastion se dodatno štiti jakom autentifikacijom (SSH ključevi, bez lozinki), evidencijom pristupa i što manjim brojem usluga na njemu. U ovom labu je bastion samo dodatna adresa na web mašini, radi jednostavnosti; u stvarnom sistemu to je zasebna mašina.</div>
+</section>
+
+<section class="pb">
+<div class="kicker">Sažetak i provjera znanja</div>
+<h2>Pregled naredbi, pitanja i zadaci</h2>
+<table class="t">
+<tr><th>Cilj</th><th>Šta radi</th><th>Mijenja sistem?</th></tr>
+<tr><td><code>make s4-p1</code></td><td>ispis naredbi za lab (<code>DRY=1</code>)</td><td>ne</td></tr>
+<tr><td><code>make s4-p1-up</code></td><td>ruter i segmenti web/app/db (namespace-ovi)</td><td>da (samo namespace-ovi, sudo)</td></tr>
+<tr><td><code>make s4-p2</code></td><td><code>nft -c</code>: provjera sintakse</td><td>ne</td></tr>
+<tr><td><code>make s4-p2-apply</code></td><td>učitava vatrozid, matrica PRIJE/POSLIJE</td><td>da (u ruteru laba)</td></tr>
+<tr><td><code>make s4-p3</code> / <code>s4-p3-up</code></td><td>ispis naredbi / WireGuard tunel + test</td><td>ne / da</td></tr>
+<tr><td><code>make s4-p4</code> / <code>s4-p4-up</code></td><td>ispis naredbi / bridge + VLAN + test</td><td>ne / da (traži 8021q)</td></tr>
+<tr><td><code>make s4-p5</code> / <code>s4-p5-apply</code></td><td>rola vatrozida: <code>--check</code> / dva izvršavanja + testovi</td><td>ne / da</td></tr>
+<tr><td><code>make s4-clean</code></td><td>briše sve iz sedmice 4</td><td>uklanja</td></tr>
+</table>
+<table class="t">
+<tr><th>Pitanje</th><th>Odgovor</th></tr>
+<tr><td>Zašto ruter bez <code>ip_forward=1</code> ne prosljeđuje pakete?</td><td>Jezgra zadano odbacuje pakete koji nisu za nju; prosljeđivanje se mora uključiti, čime je ruter svjesna odluka, a ne nuspojava.</td></tr>
+<tr><td>Čemu služi <code>ct state established,related accept</code>?</td><td>Propušta odgovore na već dozvoljene veze, pa se pravilima opisuje samo smjer uspostave veze.</td></tr>
+<tr><td>Zašto datoteka počinje s <code>table</code> pa <code>delete table</code>?</td><td>Učitavanje počinje od čistog stanja i ne javlja grešku ako tabela ne postoji, pa je idempotentno.</td></tr>
+<tr><td>Zašto jedna tabela s <code>accept</code> ne otvara ono što druga zabranjuje?</td><td>Paket mora proći sve lance na istom hooku; <code>accept</code> završava samo svoj lanac.</td></tr>
+<tr><td>Šta je <code>allowed-ips</code> u WireGuardu?</td><td>Istovremeno tabela usmjeravanja (šta ide kroz tunel) i kontrola pristupa (šta se prihvata od peera).</td></tr>
+<tr><td>Po čemu se VLAN razlikuje od podmreže?</td><td>VLAN je L2 domena (ko dijeli okvire), podmreža je L3 adresni opseg; obično su 1:1, ali nisu isto.</td></tr>
+<tr><td>Čemu <code>validate</code> u zadatku <code>template</code>?</td><td>Neispravna datoteka se provjeri prije zamjene radne, pa greška u šablonu ne ruši vatrozid.</td></tr>
+</table>
+<h3>Zadaci za samostalni rad</h3>
+<ol>
+<li>U <code>firewall.nft</code> dodati pravilo koje dozvoljava <code>web</code> prema <code>app</code> na port 9090, učitati ga i u <code>test.sh</code> dodati dvije provjere (dozvoljeno 9090, blokirano 9091). Objasniti zašto bez pravila veza ne radi.</li>
+<li>Privremeno ukloniti <code>ct state established,related accept</code> i pokrenuti test. Objasniti šta se desi s odgovorima i zašto se pravilo vraća.</li>
+<li>U <code>vars.yml</code> dodati segment <code>cache</code> (<code>10.40.4.0/24</code>) i pravilo <code>app</code> → <code>cache</code> na port 6379 te segment dodati u <code>SEGMENTI</code> u <code>lab.sh</code>. Pokrenuti rolu dva puta i predati izlaz drugog izvršavanja.</li>
+<li>U <code>wg.sh</code> dodati drugog klijenta koji kroz tunel smije dosegnuti samo <code>web</code> segment (<code>allowed-ips</code> + pravilo za <code>wg</code> sučelje). Dokazati testom da ne doseže <code>app</code>.</li>
+<li>Svakom pravilu u lancu <code>forward</code> dodati <code>counter</code>, pokrenuti test i objasniti koji brojač je porastao pri kojoj provjeri.</li>
+<li>U <code>vlan.sh</code> dodati treći VLAN (30) s jednom mašinom i proširiti test izolacije (zahtijeva jezgru s VLAN podrškom).</li>
+</ol>
+<div class="note "><span class="lbl">Sljedeća sedmica</span>Mreža i vatrozid su definisani kodom. Sedmica 5 uvodi imenovanje i komunikaciju: DNS zone i zapise (BIND/CoreDNS, Terraform DNS provideri), e-poštu (Postfix, Dovecot, SPF, DKIM, DMARC, TLS/ACME) te SFTP s chroot korisnicima iza vatrozida.</div>
+</section>
+
+<footer>Računarstvo u oblaku · II ciklus, III semestar · akademska 2026/27 · Sedmica 4: Mrežna konfiguracija i firewall kao kod</footer>
+</body></html>

@@ -1,0 +1,51 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Generisano iz group_vars; ručne izmjene će biti prepisane pri sljedećem pokretanju.
+{% macro portovi(l) %}{% if l | length == 1 %}{{ l[0] }}{% else %}{ {{ l | join(', ') }} }{% endif %}{% endmacro %}
+table inet ruo
+delete table inet ruo
+
+table inet ruo {
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+
+    ct state established,related accept
+    ct state invalid drop
+
+{% for r in fw_javno %}
+    # internet -> {{ r.do }}
+    iifname "{{ fw_uplink }}" ip daddr {{ fw_segmenti[r.do] }} {{ r.proto }} dport {{ portovi(r.portovi) }} accept
+{% endfor %}
+{% for r in fw_pravila %}
+    # {{ r.od }} -> {{ r.do }}
+    ip saddr {{ fw_segmenti[r.od] }} ip daddr {{ fw_segmenti[r.do] }} {{ r.proto }} dport {{ portovi(r.portovi) }} accept
+{% endfor %}
+{% for r in fw_admin %}
+    # bastion -> {{ r.do }} (administracija)
+    ip saddr {{ fw_bastion }} ip daddr {{ fw_segmenti[r.do] }} {{ r.proto }} dport {{ portovi(r.portovi) }} accept
+{% endfor %}
+{% for s in fw_izlaz %}
+    # izlaz: {{ s }} -> internet
+    ip saddr {{ fw_segmenti[s] }} oifname "{{ fw_uplink }}" accept
+{% endfor %}
+{% for r in fw_vpn %}
+    # VPN -> {{ r.do }}
+    iifname "{{ fw_vpn_if }}" ip daddr {{ fw_segmenti[r.do] }} {{ r.proto }} dport {{ portovi(r.portovi) }} accept
+{% endfor %}
+
+    limit rate 5/minute log prefix "ruo-drop: "
+  }
+
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iifname "lo" accept
+    ct state established,related accept
+    udp dport {{ fw_vpn_port }} accept
+    icmp type echo-request limit rate 5/second accept
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority srcnat;
+    oifname "{{ fw_uplink }}" ip saddr 10.40.0.0/16 counter masquerade
+  }
+}
