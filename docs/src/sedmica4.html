@@ -7,7 +7,7 @@
 
 <div class="kicker">Bilješke s predavanja · Sedmica 4</div>
 <h1>Mrežna konfiguracija i firewall kao kod</h1>
-<p class="lead">Mreža kao kod: segmenti i usmjeravanje (<code>VPC/subnet</code>, routing, NAT), vatrozid pravilima u <code>nftables</code>, segmentacija web/app/db te uvod u bridge i VLAN. Pravila se opisuju datotekama i podacima, a ishod se provjerava testom povezivosti.</p>
+<p class="lead">Mreža kao kod: osnovni mrežni zadaci naredbom <code>ip</code> (adrese, sučelja, rute), segmenti i usmjeravanje (<code>VPC/subnet</code>, routing, NAT) te vatrozid u <code>nftables</code>. Konfiguracija se opisuje datotekama i podacima, a ishod se provjerava testom povezivosti.</p>
 
 <table class="meta">
 <tr><td>Predmet</td><td>Računarstvo u oblaku</td></tr>
@@ -26,21 +26,21 @@
 <p>Za rad nije potreban račun u oblaku. Mrežni elementi (ruter, segmenti) prave se od <strong>Linux network namespace-ova</strong>, istog mehanizma na kojem se zasnivaju kontejneri iz prve sedmice. Jedan namespace je jedna izolirana mreža sa svojim sučeljima, adresama i tabelom usmjeravanja, pa tako radi i svaka mašina u labu.</p>
 <p>Nakon nastavne jedinice student je u stanju:</p>
 <ul>
+<li>pregledati, dodati, promijeniti i obrisati IP adresu, sučelje i rutu naredbom <code>ip</code> te objasniti zašto su te promjene privremene,</li>
 <li>povezati pojmove oblaka (VPC, subnet, route table, NAT, security group) s Linux alatima koji ih ostvaruju,</li>
 <li>napraviti segmentiranu mrežu s ruterom i NAT-om i objasniti put paketa kroz nju,</li>
 <li>napisati stateful vatrozid s politikom "sve zabranjeno, dozvole se nabrajaju" u <code>nftables</code> i provjeriti ga matricom povezivosti,</li>
 <li>generisati pravila vatrozida iz podataka Ansible rolom i provjeriti idempotentnost,</li>
-<li>objasniti razliku između L2 (bridge, VLAN) i L3 (ruter) segmentacije.</li>
 </ul>
 
 <h3>Okruženje i pokretanje</h3>
-<p>Alate za ovu sedmicu (<code>ip</code> i <code>nft</code>) instalira <code>00-setup.sh</code>. Ako je već pokrenuta ranije, ponovo se pokrene (idempotentna je), pa se primjeri pokreću redom:</p>
+<p>Alate za ovu sedmicu (<code>ip</code>, <code>ping</code> i <code>nft</code>) instalira <code>00-setup.sh</code>. Ako je već pokrenuta ranije, ponovo se pokrene (idempotentna je), pa se primjeri pokreću redom:</p>
 <div class="code"><div class="hd"><span>bash</span><span>Isječak 0 · početak</span></div><pre>cd ~/RuO-2026-27 &amp;&amp; git pull
-./00-setup.sh                    # dodaje iproute2 i nftables
-make check                       # da li je nft prisutan
-make s4-p1                       # zatim s4-p2 ... s4-p4; opcionalni koraci imaju sufiks -up / -apply</pre></div>
-<div class="note "><span class="lbl">Rad bez troškova: pregled umjesto izvršavanja</span>Osnovni cilj svakog primjera samo pokazuje šta bi se desilo: <code>DRY=1</code> ispisuje naredbe bez izvršavanja, <code>nft -c</code> provjerava sintaksu bez učitavanja, a <code>ansible-playbook --check --diff</code> prikazuje razliku. Stvarno izvršavanje ima sufiks <code>-up</code> ili <code>-apply</code>, traži <code>sudo</code> i mijenja samo mrežu u izoliranim namespace-ovima, ne mrežu računara. Sve se briše sa <code>make s4-clean</code>.</div>
-<div class="note warn"><span class="lbl">Važno</span>Primjeri <code>-up</code> kreiraju namespace-ove i učitavaju pravila, pa traže administratorska prava. Redoslijed je obavezan: prvo <code>s4-p1-up</code> (lab), zatim <code>s4-p2-apply</code> (vatrozid).</div>
+./00-setup.sh                    # dodaje iproute2, iputils-ping i nftables
+make check                       # da li su nft i ip prisutni
+make s4-p1                       # pregled mreže; zatim s4-p1-lab, s4-p2 ... s4-p4; opcionalni koraci imaju sufiks -lab, -up ili -apply</pre></div>
+<div class="note "><span class="lbl">Rad bez troškova: pregled umjesto izvršavanja</span>Osnovni cilj svakog primjera samo pokazuje šta bi se desilo: <code>DRY=1</code> ispisuje naredbe bez izvršavanja, <code>nft -c</code> provjerava sintaksu bez učitavanja, a <code>ansible-playbook --check --diff</code> prikazuje razliku. Stvarno izvršavanje ima sufiks <code>-lab</code>, <code>-up</code> ili <code>-apply</code>, traži <code>sudo</code> i mijenja samo mrežu u izoliranim namespace-ovima, ne mrežu računara. Sve se briše sa <code>make s4-clean</code>.</div>
+<div class="note warn"><span class="lbl">Važno</span>Primjeri <code>-lab</code>, <code>-up</code> i <code>-apply</code> kreiraju namespace-ove i učitavaju pravila, pa traže administratorska prava. Primjeri <code>s4-p2</code> i dalje se nastavljaju jedan na drugi: prvo <code>s4-p2-up</code> (lab), zatim <code>s4-p3-apply</code> (vatrozid). Vježba iz <code>s4-p1</code> je samostalna.</div>
 </section>
 
 <section>
@@ -54,7 +54,6 @@ make s4-p1                       # zatim s4-p2 ... s4-p4; opcionalni koraci imaj
 <tr><td>Route table</td><td>kuda ide koji promet</td><td><code>ip route</code>, zadani put preko rutera</td></tr>
 <tr><td>Internet / NAT gateway</td><td>izlaz privatnih mašina prema internetu</td><td>uplink <code>r-up</code> + <code>masquerade</code></td></tr>
 <tr><td>Security group / NSG</td><td>stateful pravila uz mašinu ili podmrežu</td><td><code>nftables</code> lanac <code>forward</code>, zadano <code>drop</code></td></tr>
-<tr><td>VLAN / L2 preklopnik</td><td>razdvajanje prometa na sloju 2</td><td>Linux <code>bridge</code> + 802.1Q</td></tr>
 </table>
 <div class="note bg"><span class="lbl">Pozadina: nftables</span>Linux vatrozid je dugo bio <code>iptables</code> (više odvojenih alata za IPv4, IPv6, ARP). <code>nftables</code> ga je zamijenio 2014. godine (jezgra 3.13): jedan alat, jedan jezik, skupovi (<em>sets</em>) i atomsko učitavanje cijele datoteke, a od Debiana 10 je i zadani. Pravila su organizovana u <strong>tabele</strong> (<code>table</code>), tabele u <strong>lance</strong> (<code>chain</code>), a lanci se vežu na <em>hook</em> u putu paketa kroz jezgru: <code>input</code> (paket za sam ruter), <code>forward</code> (paket koji prolazi kroz ruter), <code>output</code> i <code>prerouting</code>/<code>postrouting</code> (NAT). Praćenje veza (<em>connection tracking</em>, <code>ct</code>) pamti stanje, pa vatrozid dozvoljava odgovore na dozvoljene veze bez posebnog pravila.</div>
 <figure>
@@ -83,9 +82,120 @@ make s4-p1                       # zatim s4-p2 ... s4-p4; opcionalni koraci imaj
 
 <section>
 <div class="kicker">2 · Primjer 1 · s4/p1</div>
+<h2>Osnovni mrežni zadaci: pregled, dodavanje, mijenjanje i brisanje</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>Naredba <code>ip</code> (paket <em>iproute2</em>) zamijenila je stare <code>ifconfig</code> i <code>route</code>. Radi s tri vrste objekata: <code>ip link</code> (<strong>sučelje</strong>: kartica ili virtuelni kabl, može biti uključeno ili isključeno), <code>ip addr</code> (<strong>adresa</strong>: IP uz prefiks, npr. <code>10.60.0.1/24</code> znači adresu <code>10.60.0.1</code> u mreži od 24 bita) i <code>ip route</code> (<strong>ruta</strong>: kroz koje sučelje, i preko kojeg <em>gatewaya</em>, ide promet za neku mrežu). Mašina može slati IP promet tek kad sučelje ima adresu i uključeno je; jezgra pri dodavanju adrese sama dodaje rutu za njenu podmrežu. Naredbe mijenjaju <em>samo trenutno stanje</em>: restart ih briše, pa se trajna konfiguracija piše datotekom (netplan, vidi niže).</div>
+<table class="t">
+<tr><th>Zadatak</th><th>Naredba</th></tr>
+<tr><td>pregled sučelja / adresa / ruta</td><td><code>ip -br link</code> · <code>ip -br addr</code> · <code>ip route</code></td></tr>
+<tr><td>uključi / isključi sučelje</td><td><code>ip link set eth0 up</code> · <code>ip link set eth0 down</code></td></tr>
+<tr><td>dodaj adresu</td><td><code>ip addr add 10.60.0.1/24 dev eth0</code></td></tr>
+<tr><td>promijeni adresu</td><td><code>ip addr del</code> stare, pa <code>ip addr add</code> nove (ili <code>ip addr replace</code>)</td></tr>
+<tr><td>obriši adresu / sve adrese</td><td><code>ip addr del 10.60.0.11/24 dev eth0</code> · <code>ip addr flush dev eth0</code></td></tr>
+<tr><td>promijeni MTU</td><td><code>ip link set eth0 mtu 1400</code></td></tr>
+<tr><td>dodaj / obriši rutu</td><td><code>ip route add 10.70.0.0/24 via 10.60.0.22</code> · <code>ip route del 10.70.0.0/24</code></td></tr>
+<tr><td>kojim putem ide paket</td><td><code>ip route get 10.70.0.1</code></td></tr>
+<tr><td>brojači paketa i grešaka</td><td><code>ip -s link show eth0</code></td></tr>
+</table>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 1 · pokretanje</span></div><pre>make s4-p1           # pregled mreže računara (samo čita)
+make s4-p1-lab       # opcionalno: cijela vježba u dva namespace-a (traži sudo); PAUZA=1 čeka Enter
+make s4-p1-clean</pre></div>
+<p>Vježba (<code>s4/p1/osnove.sh</code>) pravi dva namespace-a, <code>ruo-n1</code> i <code>ruo-n2</code>, spojena veth kablom, pa mreža računara ostaje netaknuta. Svaki korak ispiše naredbu, izvrši je i pokaže stanje; <code>ping</code> pokazuje da li promjena radi. Prvi dio: sučelje je isključeno i bez adrese, zatim se uključuje, dobija adresu i druga adresa.</p>
+<div class="out"><div class="hd">izlaz make s4-p1-lab: koraci 1 do 4 (skraćeno)</div><pre>sudo PAUZA= bash s4/p1/osnove.sh vjezba
+
+== 1. Početno stanje: sučelje postoji, ali je isključeno i nema adresu
+[ruo-n1]$ ip -br link
+lo               DOWN           00:00:00:00:00:00 &lt;LOOPBACK&gt; 
+eth0@if2         DOWN           06:26:11:47:60:d6 &lt;BROADCAST,MULTICAST&gt; 
+[ruo-n1]$ ip -br addr
+lo               DOWN           
+eth0@if2         DOWN           
+
+== 2. Uključivanje sučelja (up): bez adrese ono još ne može slati IP promet
+[ruo-n1]$ ip link set lo up
+[ruo-n1]$ ip link set eth0 up
+[ruo-n2]$ ip link set lo up
+[ruo-n2]$ ip link set eth0 up
+[ruo-n1]$ ip -br addr
+lo               UNKNOWN        127.0.0.1/8 
+eth0@if2         UP             
+
+== 3. Dodavanje adrese (ip addr add): oblik adresa/prefiks; jezgra sama dodaje rutu za podmrežu
+[ruo-n1]$ ip addr add 10.60.0.1/24 dev eth0
+[ruo-n2]$ ip addr add 10.60.0.2/24 dev eth0
+[ruo-n1]$ ip -br addr
+lo               UNKNOWN        127.0.0.1/8 
+eth0@if2         UP             10.60.0.1/24 
+[ruo-n1]$ ip route
+10.60.0.0/24 dev eth0 proto kernel scope link src 10.60.0.1 
+[ruo-n1] ping 10.60.0.2: ODGOVARA</pre></div>
+<p>Adresa se ne "uređuje": mijenjanje je brisanje stare i dodavanje nove, što se vidi po tome da stara adresa prestaje odgovarati na ping. Isto vrijedi za sučelje: isključeno sučelje prekida promet iako adresa ostaje.</p>
+<div class="out"><div class="hd">izlaz: koraci 5 i 6 (mijenjanje adrese i svojstava sučelja)</div><pre>== 4. Druga adresa na istom sučelju (dozvoljeno: sučelje može imati više adresa)
+[ruo-n1]$ ip addr add 10.60.0.11/24 dev eth0
+[ruo-n1]$ ip -br addr
+lo               UNKNOWN        127.0.0.1/8 
+eth0@if2         UP             10.60.0.1/24 10.60.0.11/24 
+
+== 5. Mijenjanje adrese: IP se ne &#x27;uređuje&#x27;, stara se briše a nova dodaje (n2: .2 -&gt; .22)
+[ruo-n2]$ ip addr del 10.60.0.2/24 dev eth0
+[ruo-n2]$ ip addr add 10.60.0.22/24 dev eth0
+[ruo-n1] ping 10.60.0.2: NE ODGOVARA
+[ruo-n1] ping 10.60.0.22: ODGOVARA</pre></div>
+<div class="note warn"><span class="lbl">Greške koje se najčešće prave</span>Dodavanje adrese bez prefiksa (<code>10.60.0.1</code> bez <code>/24</code>) daje prefiks <code>/32</code>, pa nema rute za podmrežu i ništa osim same adrese ne radi. Zaboravljeno <code>ip link set ... up</code> ostavlja sučelje isključenim (<code>state DOWN</code>). Dvije različite mašine s istom adresom prave prekide koji se teško traže, pa se prije dodavanja provjerava postoji li adresa (<code>ip -br addr</code>).</div>
+<p>Ruta je potrebna kad je cilj izvan direktno spojenih mreža. U vježbi <code>ruo-n2</code> ima mrežu <code>10.70.0.0/24</code> koju <code>ruo-n1</code> ne poznaje: ping ne prolazi dok se ne doda ruta preko <code>ruo-n2</code>, a prestaje čim se obriše. <code>ip route get</code> pokazuje koju će rutu jezgra izabrati za dati cilj.</p>
+<div class="out"><div class="hd">izlaz: koraci 7 i 8 (rute i brisanje adresa)</div><pre>== 6. Mijenjanje svojstava sučelja: MTU (najveća veličina paketa) i isključivanje/uključivanje
+[ruo-n1]$ ip link set eth0 mtu 1400
+[ruo-n1]$ ip link show eth0
+2: eth0@if2: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1400 qdisc noqueue state UP mode DEFAULT group default qlen 1000
+    link/ether 06:26:11:47:60:d6 brd ff:ff:ff:ff:ff:ff link-netns ruo-n2
+[ruo-n1]$ ip link set eth0 down
+[ruo-n1] ping 10.60.0.22: NE ODGOVARA
+[ruo-n1]$ ip link set eth0 up
+[ruo-n1] ping 10.60.0.22: ODGOVARA
+
+== 7. Rute: n2 ima još jednu mrežu (10.70.0.1 na lo); n1 do nje nema puta dok se ruta ne doda
+[ruo-n2]$ ip addr add 10.70.0.1/24 dev lo
+[ruo-n1] ping 10.70.0.1: NE ODGOVARA
+[ruo-n1]$ ip route add 10.70.0.0/24 via 10.60.0.22
+[ruo-n1]$ ip route get 10.70.0.1
+10.70.0.1 via 10.60.0.22 dev eth0 src 10.60.0.1 uid 0 
+    cache 
+[ruo-n1] ping 10.70.0.1: ODGOVARA
+[ruo-n1]$ ip route del 10.70.0.0/24
+[ruo-n1] ping 10.70.0.1: NE ODGOVARA</pre></div>
+<div class="out"><div class="hd">izlaz: korak 9 (statistika sučelja)</div><pre>== 8. Brisanje adrese (ip addr del) i brisanje svih adresa sa sučelja (ip addr flush)
+[ruo-n1]$ ip addr del 10.60.0.11/24 dev eth0
+[ruo-n1]$ ip -br addr
+lo               UNKNOWN        127.0.0.1/8 
+eth0@if2         UP             10.60.0.1/24 
+[ruo-n1]$ ip addr flush dev eth0
+[ruo-n1]$ ip -br addr
+lo               UNKNOWN        127.0.0.1/8 
+eth0@if2         UP             
+[ruo-n1]$ ip route
+(prazna tabela usmjeravanja: rute iz adrese nestaju zajedno s njom)
+[ruo-n1] ping 10.60.0.22: NE ODGOVARA</pre></div>
+<h3>Trajna konfiguracija: netplan</h3>
+<p>Sve gore je nestalo restartom. Na Ubuntuu se stalna mrežna konfiguracija opisuje datotekom u <code>/etc/netplan/</code> (YAML, isti princip kao ostatak kursa: željeno stanje u datoteci, ne niz ručnih naredbi). Primjer opisuje isto što i naredbe <code>ip addr add</code> i <code>ip route add</code> iz vježbe:</p>
+<div class="code"><div class="hd"><span>yaml</span><span>Isječak 2 · s4/p1/netplan-primjer.yaml</span></div><pre># Trajna konfiguracija mreže na Ubuntuu (netplan). Naredbe ip mijenjaju stanje samo do restarta;
+# ova datoteka opisuje isto što i ip addr add / ip route add, ali kao kod koji preživi restart.
+# Primjena: sudo cp netplan-primjer.yaml /etc/netplan/60-ruo.yaml &amp;&amp; sudo netplan try
+network:
+  version: 2
+  ethernets:
+    eth0:
+      addresses:
+        - 10.60.0.1/24          # ip addr add 10.60.0.1/24 dev eth0
+      routes:
+        - to: 10.70.0.0/24      # ip route add 10.70.0.0/24 via 10.60.0.22
+          via: 10.60.0.22</pre></div>
+<div class="note "><span class="lbl">Provjera i primjena</span>Prije primjene se datoteka provjerava, a <code>sudo netplan try</code> primjenjuje promjenu uz automatski povrat ako se u roku od nekoliko sekundi ne potvrdi, što štiti od gubitka veze pri radu na udaljenoj mašini. Naredba <code>netplan generate</code> pokazuje šta će netplan prosljediti sistemu (<code>systemd-networkd</code> ili <code>NetworkManager</code>). Primjer je provjeren tom naredbom. Na WSL2 mrežom upravlja Windows, pa se netplan tamo ne koristi.</div>
+</section>
+
+<section>
+<div class="kicker">3 · Primjer 2 · s4/p2</div>
 <h2>Segmenti, ruter i NAT od namespace-ova</h2>
 <div class="note bg"><span class="lbl">Pozadina primjera</span>Svaki segment je namespace (<code>ruo-web</code>, <code>ruo-app</code>, <code>ruo-db</code>) spojen na ruter <code>ruo-rtr</code> <strong>veth parom</strong>: virtualnim kablom čiji se jedan kraj nalazi u segmentu, a drugi u ruteru. Ruter ima po jedno sučelje u svakom segmentu (<code>.1</code> u podmreži) i uplink prema "internetu" (host). Mašine u segmentu imaju zadani put (<code>default via</code>) preko rutera. Bez <code>net.ipv4.ip_forward=1</code> ruter ne bi prosljeđivao pakete, što je čest razlog zašto "sve je spojeno, a ništa ne radi".</div>
-<div class="code long"><div class="hd"><span>bash</span><span>Isječak 1 · s4/p1/lab.sh (izvod)</span></div><pre>  # 1. ruter i uplink prema &quot;internetu&quot; (host)
+<div class="code long"><div class="hd"><span>bash</span><span>Isječak 3 · s4/p2/lab.sh (izvod)</span></div><pre>  # 1. ruter i uplink prema &quot;internetu&quot; (host)
   run ip netns add ruo-rtr
   run ip link add h-up type veth peer name r-up netns ruo-rtr
   run ip addr add 10.40.0.1/30 dev h-up
@@ -109,10 +219,10 @@ make s4-p1                       # zatim s4-p2 ... s4-p4; opcionalni koraci imaj
     run ip -n &quot;ruo-$ime&quot; link set eth0 up
     run ip -n &quot;ruo-$ime&quot; route add default via &quot;10.40.$n.1&quot;
   done</pre></div>
-<div class="code"><div class="hd"><span>bash</span><span>Isječak 2 · pokretanje</span></div><pre>make s4-p1           # DRY=1: ispisuje naredbe, ništa ne mijenja
-make s4-p1-up        # opcionalno: stvarno pravi ruter i tri segmenta (traži sudo)</pre></div>
-<div class="out"><div class="hd">izlaz make s4-p1-up: stanje rutera (skraćeno, imena sučelja se mogu razlikovati)</div><pre>== ruo-rtr
-r-up@if5         UP             10.40.0.2/30 
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 4 · pokretanje</span></div><pre>make s4-p2           # DRY=1: ispisuje naredbe, ništa ne mijenja
+make s4-p2-up        # opcionalno: stvarno pravi ruter i tri segmenta (traži sudo)</pre></div>
+<div class="out"><div class="hd">izlaz make s4-p2-up: stanje rutera (skraćeno, imena sučelja se mogu razlikovati)</div><pre>== ruo-rtr
+r-up@if6         UP             10.40.0.2/30 
 r-web@if2        UP             10.40.1.1/24 
 r-app@if2        UP             10.40.2.1/24 
 r-db@if2         UP             10.40.3.1/24 
@@ -122,15 +232,15 @@ default via 10.40.0.1 dev r-up
 10.40.2.0/24 dev r-app proto kernel scope link src 10.40.2.1 
 10.40.3.0/24 dev r-db proto kernel scope link src 10.40.3.1 </pre></div>
 <p>Ruter ima put do svake podmreže jer su mu sučelja direktno u njima (<code>proto kernel scope link</code>), a sve ostalo ide na <code>default via 10.40.0.1</code>. Za povratni put host mora znati da je <code>10.40.0.0/16</code> iza rutera; to je jedan red u skripti (<code>ip route add 10.40.0.0/16 via 10.40.0.2</code>). Isti princip vrijedi u oblaku: odgovor mora imati put nazad, a u tabeli usmjeravanja je to <em>route table</em> podmreže.</p>
-<div class="note"><span class="lbl">NAT</span>Privatne adrese (<code>10.0.0.0/8</code>) se ne usmjeravaju po internetu. <strong>Masquerade</strong> mijenja izvornu adresu paketa u adresu izlaznog sučelja rutera i pamti prevod, pa se odgovor vraća pravoj mašini. To je <em>SNAT</em> kakav radi kućni ruter i NAT gateway u oblaku. Pravilo je u lancu <code>postrouting</code> (Isječak 3).</div>
+<div class="note"><span class="lbl">NAT</span>Privatne adrese (<code>10.0.0.0/8</code>) se ne usmjeravaju po internetu. <strong>Masquerade</strong> mijenja izvornu adresu paketa u adresu izlaznog sučelja rutera i pamti prevod, pa se odgovor vraća pravoj mašini. To je <em>SNAT</em> kakav radi kućni ruter i NAT gateway u oblaku. Pravilo je u lancu <code>postrouting</code> (Primjer 3).</div>
 </section>
 
 <section class="pb">
-<div class="kicker">3 · Primjer 2 · s4/p2</div>
+<div class="kicker">4 · Primjer 3 · s4/p3</div>
 <h2>Vatrozid u nftables: default deny i segmentacija</h2>
 <div class="note bg"><span class="lbl">Pozadina primjera</span>Pravila se učitavaju u ruter, pa vrijede za sav promet između segmenata. Lanac <code>forward</code> ima <code>policy drop</code>: sve što nijedno pravilo ne dozvoljava pada. Prvo pravilo (<code>ct state established,related accept</code>) propušta odgovore na dozvoljene veze, pa je dovoljno opisati samo <em>smjer uspostave</em> veze (stateful vatrozid, kao security group u oblaku). Datoteka počinje s <code>table inet ruo</code> i <code>delete table inet ruo</code>: prvi red osigurava da tabela postoji (inače bi brisanje javilo grešku), a drugi je briše, pa učitavanje uvijek počinje od čistog stanja i može se ponavljati (<strong>idempotentnost</strong>). Cijela datoteka se učitava atomski: ili sva pravila, ili nijedno.</div>
-<div class="code long"><div class="hd"><span>nft</span><span>Isječak 3 · s4/p2/firewall.nft</span></div><pre>#!/usr/sbin/nft -f
-# s4/p2: segmentacija web/app/db na ruteru (ruo-rtr). Učitava se atomski: cijela datoteka ili ništa.
+<div class="code long"><div class="hd"><span>nft</span><span>Isječak 5 · s4/p3/firewall.nft</span></div><pre>#!/usr/sbin/nft -f
+# s4/p3: segmentacija web/app/db na ruteru (ruo-rtr). Učitava se atomski: cijela datoteka ili ništa.
 # Idiom &quot;table ...; delete table ...; table ... { }&quot; čini učitavanje idempotentnim bez diranja tuđih tabela.
 
 define web    = 10.40.1.0/24
@@ -184,9 +294,9 @@ table inet ruo {
 <tr><td><code>masquerade</code></td><td>NAT koji koristi adresu izlaznog sučelja (lanac <code>postrouting</code>)</td></tr>
 </table>
 <div class="note warn"><span class="lbl">Granica: više tabela</span>Paket mora proći <em>sve</em> lance na istom hooku. <code>accept</code> u jednoj tabeli završava samo taj lanac, pa druga tabela s <code>policy drop</code> i dalje može odbaciti isti paket. Zato se dozvola dodaje u tabelu koja zabranjuje, a ne u zasebnu.</div>
-<div class="code"><div class="hd"><span>bash</span><span>Isječak 4 · pokretanje</span></div><pre>make s4-p2           # nft -c: provjera sintakse bez učitavanja
-make s4-p2-apply     # opcionalno: matrica PRIJE pa POSLIJE učitavanja (traži s4-p1-up)</pre></div>
-<p>Matrica povezivosti (<code>s4/p2/test.sh</code>) na svako odredište postavi TCP slušaoca, pa pokuša vezu iz zadanog izvora. Prva kolona je izvor, zatim odredište i port, ishod i očekivanje iz politike. Prije vatrozida je mreža ravna i sve prolazi (šest razlika od politike), a poslije je ishod jednak politici u svih deset slučajeva:</p>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 6 · pokretanje</span></div><pre>make s4-p3           # nft -c: provjera sintakse bez učitavanja
+make s4-p3-apply     # opcionalno: matrica PRIJE pa POSLIJE učitavanja (traži s4-p2-up)</pre></div>
+<p>Matrica povezivosti (<code>s4/p3/test.sh</code>) na svako odredište postavi TCP slušaoca, pa pokuša vezu iz zadanog izvora. Prva kolona je izvor, zatim odredište i port, ishod i očekivanje iz politike. Prije vatrozida je mreža ravna i sve prolazi (šest razlika od politike), a poslije je ishod jednak politici u svih deset slučajeva:</p>
 <div class="out"><div class="hd">izlaz PRIJE učitavanja firewall.nft</div><pre>  host   -&gt; 10.40.1.2  :80     dozvoljeno  (očekivano: dozvoljeno) ok
   host   -&gt; 10.40.2.2  :8080   dozvoljeno  (očekivano: blokirano ) RAZLIKA
   host   -&gt; 10.40.3.2  :5432   dozvoljeno  (očekivano: blokirano ) RAZLIKA
@@ -207,7 +317,7 @@ make s4-p2-apply     # opcionalno: matrica PRIJE pa POSLIJE učitavanja (traži 
   app    -&gt; 10.40.3.2  :22     blokirano   (očekivano: blokirano ) ok
   web    -&gt; 10.40.0.1  :9000   dozvoljeno  (očekivano: dozvoljeno) ok
   db     -&gt; 10.40.0.1  :9000   blokirano   (očekivano: blokirano ) ok</pre></div>
-<div class="code"><div class="hd"><span>nft</span><span>Isječak 5 · nft list chain inet ruo forward (stanje u jezgri)</span></div><pre>table inet ruo {
+<div class="code"><div class="hd"><span>nft</span><span>Isječak 7 · nft list chain inet ruo forward (stanje u jezgri)</span></div><pre>table inet ruo {
   chain forward {
     type filter hook forward priority filter; policy drop;
     ct state established,related accept
@@ -220,42 +330,6 @@ make s4-p2-apply     # opcionalno: matrica PRIJE pa POSLIJE učitavanja (traži 
   }
 }</pre></div>
 <div class="note "><span class="lbl">Šta jezgra radi s pravilima</span>Ispis stanja se razlikuje od izvorne datoteke: <code>@web_ports</code> ostaje skup, a lista <code>{ $web, $app }</code> je spojena u interval <code>10.40.1.0-10.40.2.255</code> jer su podmreže susjedne. Smisao je isti, ali treba znati čitati ispis. Brojači (<code>counter</code>) se mogu dodati pravilima da se vidi koliko je paketa pogodilo koje pravilo, što je prvi alat za otkrivanje zašto veza ne radi.</div>
-</section>
-
-<section>
-<div class="kicker">4 · Primjer 3 · s4/p3</div>
-<h2>Bridge i VLAN: segmentacija na sloju 2</h2>
-<div class="note bg"><span class="lbl">Pozadina primjera</span>Do sada je segmentacija bila na sloju 3: ruter razdvaja podmreže, a vatrozid odlučuje šta prolazi. <strong>Bridge</strong> je virtualni preklopnik (sloj 2): prosljeđuje okvire između portova prema MAC adresama. <strong>VLAN</strong> (IEEE 802.1Q) dijeli taj preklopnik na više odvojenih L2 domena. Okvir nosi oznaku s brojem VLAN-a (od 1 do 4094), a preklopnik ga isporučuje samo portovima istog VLAN-a. Na <em>pristupnom</em> (<code>access</code>) portu mašina ne vidi oznake: preklopnik sam stavlja njene okvire u zadani VLAN (<code>pvid</code>). Zato dvije mašine u različitim VLAN-ovima ne mogu razgovarati čak ni kad su im adrese u istoj podmreži.</div>
-<div class="code long"><div class="hd"><span>bash</span><span>Isječak 6 · s4/p3/vlan.sh (izvod)</span></div><pre>port() { # ime  vlan  ip     pristupni port: okviri bez oznake ulaze u zadani VLAN
-  run ip netns add &quot;ruo-$1&quot;
-  run ip link add &quot;p-$1&quot; netns ruo-sw type veth peer name eth0 netns &quot;ruo-$1&quot;
-  run ip -n ruo-sw link set &quot;p-$1&quot; master br0
-  run ip -n ruo-sw link set &quot;p-$1&quot; up
-  run bridge -n ruo-sw vlan add dev &quot;p-$1&quot; vid &quot;$2&quot; pvid untagged   # ulazni okvir bez oznake -&gt; VLAN $2
-  run bridge -n ruo-sw vlan del dev &quot;p-$1&quot; vid 1                    # ukloni zadani VLAN 1 s porta
-  run ip -n &quot;ruo-$1&quot; addr add &quot;$3&quot; dev eth0
-  run ip -n &quot;ruo-$1&quot; link set lo up
-  run ip -n &quot;ruo-$1&quot; link set eth0 up
-}
-
-gore() {
-  run ip netns add ruo-sw
-  run ip -n ruo-sw link add br0 type bridge vlan_filtering 1   # bez vlan_filtering bridge ignoriše VLAN-ove
-  run ip -n ruo-sw link set br0 up
-  port h10a 10 10.50.10.11/24
-  port h10b 10 10.50.10.12/24
-  port h20  20 10.50.10.21/24     # ista podmreža, ali drugi VLAN: izolirana je na sloju 2
-}</pre></div>
-<table class="t">
-<tr><th>Izvor</th><th>Odredište</th><th>Očekivano</th><th>Zašto</th></tr>
-<tr><td>h10a</td><td>h10b (VLAN 10)</td><td>dozvoljeno</td><td>isti VLAN, ista L2 domena</td></tr>
-<tr><td>h10a</td><td>h20 (VLAN 20)</td><td>blokirano</td><td>drugi VLAN, iako je adresa u istoj podmreži</td></tr>
-<tr><td>h20</td><td>h10b (VLAN 10)</td><td>blokirano</td><td>isto u suprotnom smjeru</td></tr>
-</table>
-<div class="code"><div class="hd"><span>bash</span><span>Isječak 7 · pokretanje</span></div><pre>make s4-p3           # DRY=1: ispisuje naredbe
-make s4-p3-up        # opcionalno: bridge, VLAN-ovi i test izolacije
-make s4-p3-clean</pre></div>
-<div class="note warn"><span class="lbl">Status provjere</span>Ovaj primjer traži jezgru s modulom <code>8021q</code> i bridge podrškom za <code>vlan_filtering</code>. Redovna Ubuntu jezgra ih ima; u WSL2 treba provjeriti. Primjer je napisan prema bilješkama i provjeren samo kao ispis naredbi (<code>DRY=1</code>), ali <strong>nije izvršen do kraja</strong> u razvojnom okruženju (jezgra bez te podrške), pa tablica očekivanja nije potvrđena izlazom. Ako nešto ne radi, prvo pokrenuti <code>make s4-p3</code> i javiti asistentu.</div>
 </section>
 
 <section>
@@ -279,7 +353,7 @@ fw_pravila:                      # segment -&gt; segment (slojevi: web -&gt; app
 
 fw_izlaz: [web, app]             # segmenti kojima je dozvoljen izlaz prema internetu (db nije)
 
-# U labu se pravila učitavaju u namespace rutera iz s4/p1; na pravom ruteru ostaje samo &quot;nft&quot;.
+# U labu se pravila učitavaju u namespace rutera iz s4/p2; na pravom ruteru ostaje samo &quot;nft&quot;.
 fw_nft_cmd: ip netns exec ruo-rtr nft
 fw_dest: /etc/nftables.d/ruo.nft
 fw_instaliraj_paket: true</pre></div>
@@ -317,10 +391,10 @@ fw_instaliraj_paket: true</pre></div>
     validate: nft -c -f %s          # neispravna datoteka nikad ne zamijeni radnu
   notify: učitaj vatrozid</pre></div>
 <div class="code"><div class="hd"><span>bash</span><span>Isječak 11 · pokretanje</span></div><pre>make s4-p4           # syntax-check i --check --diff (bez izmjena)
-make s4-p4-apply     # opcionalno: primjena dva puta, pa matrica povezivosti (traži s4-p1-up)</pre></div>
+make s4-p4-apply     # opcionalno: primjena dva puta, pa matrica povezivosti (traži s4-p2-up)</pre></div>
 <div class="out"><div class="hd">izlaz 1. izvršavanja (PLAY RECAP)</div><pre>localhost : ok=4 changed=2 unreachable=0 failed=0 skipped=1 rescued=0 ignored=0</pre></div>
 <div class="out"><div class="hd">izlaz 2. izvršavanja: changed=0 = idempotentnost</div><pre>localhost : ok=3 changed=0 unreachable=0 failed=0 skipped=1 rescued=0 ignored=0</pre></div>
-<p>Pravila koja je rola izgenerisala daju isti ishod kao ručno napisana datoteka iz Primjera 2: matrica povezivosti ponovo daje deset od deset. Politika se sada mijenja u <code>vars.yml</code>, a ne u pravilima.</p>
+<p>Pravila koja je rola izgenerisala daju isti ishod kao ručno napisana datoteka iz Primjera 3: matrica povezivosti ponovo daje deset od deset. Politika se sada mijenja u <code>vars.yml</code>, a ne u pravilima.</p>
 </section>
 
 <section class="pb">
@@ -328,30 +402,31 @@ make s4-p4-apply     # opcionalno: primjena dva puta, pa matrica povezivosti (tr
 <h2>Pregled naredbi, pitanja i zadaci</h2>
 <table class="t">
 <tr><th>Cilj</th><th>Šta radi</th><th>Mijenja sistem?</th></tr>
-<tr><td><code>make s4-p1</code></td><td>ispis naredbi za lab (<code>DRY=1</code>)</td><td>ne</td></tr>
-<tr><td><code>make s4-p1-up</code></td><td>ruter i segmenti web/app/db (namespace-ovi)</td><td>da (samo namespace-ovi, sudo)</td></tr>
-<tr><td><code>make s4-p2</code></td><td><code>nft -c</code>: provjera sintakse</td><td>ne</td></tr>
-<tr><td><code>make s4-p2-apply</code></td><td>učitava vatrozid, matrica PRIJE/POSLIJE</td><td>da (u ruteru laba)</td></tr>
-<tr><td><code>make s4-p3</code> / <code>s4-p3-up</code></td><td>ispis naredbi / bridge + VLAN + test</td><td>ne / da (traži 8021q)</td></tr>
+<tr><td><code>make s4-p1</code> / <code>s4-p1-lab</code></td><td>pregled mreže računara / vježba s adresama, sučeljima i rutama</td><td>ne / da (samo namespace-ovi, sudo)</td></tr>
+<tr><td><code>make s4-p2</code> / <code>s4-p2-up</code></td><td>ispis naredbi (<code>DRY=1</code>) / ruter i segmenti web/app/db</td><td>ne / da (namespace-ovi, sudo)</td></tr>
+<tr><td><code>make s4-p3</code> / <code>s4-p3-apply</code></td><td><code>nft -c</code> / učitava vatrozid, matrica PRIJE/POSLIJE</td><td>ne / da (u ruteru laba)</td></tr>
 <tr><td><code>make s4-p4</code> / <code>s4-p4-apply</code></td><td>rola vatrozida: <code>--check</code> / dva izvršavanja + matrica</td><td>ne / da</td></tr>
 <tr><td><code>make s4-clean</code></td><td>briše sve iz sedmice 4</td><td>uklanja</td></tr>
 </table>
 <table class="t">
 <tr><th>Pitanje</th><th>Odgovor</th></tr>
+<tr><td>Zašto se IP adresa "ne uređuje" nego briše i dodaje?</td><td>Adresa je zaseban objekt uz sučelje; <code>ip addr del</code> i <code>add</code> mijenjaju skup adresa, a rute izvedene iz adrese nestaju i nastaju s njom.</td></tr>
+<tr><td>Šta se desi s promjenama napravljenim naredbom <code>ip</code> nakon restarta?</td><td>Nestaju, jer mijenjaju samo trenutno stanje jezgre. Trajna konfiguracija se piše datotekom (netplan).</td></tr>
+<tr><td>Zašto <code>ping</code> prestaje raditi kad se sučelje isključi, a adresa ostane?</td><td>Isključeno sučelje ne šalje ni prima okvire; adresa je samo podatak uz sučelje.</td></tr>
 <tr><td>Zašto ruter bez <code>ip_forward=1</code> ne prosljeđuje pakete?</td><td>Jezgra zadano odbacuje pakete koji nisu za nju; prosljeđivanje se mora uključiti, čime je ruter svjesna odluka, a ne nuspojava.</td></tr>
 <tr><td>Čemu služi <code>ct state established,related accept</code>?</td><td>Propušta odgovore na već dozvoljene veze, pa se pravilima opisuje samo smjer uspostave veze.</td></tr>
 <tr><td>Zašto datoteka počinje s <code>table</code> pa <code>delete table</code>?</td><td>Učitavanje počinje od čistog stanja i ne javlja grešku ako tabela ne postoji, pa je idempotentno.</td></tr>
 <tr><td>Zašto jedna tabela s <code>accept</code> ne otvara ono što druga zabranjuje?</td><td>Paket mora proći sve lance na istom hooku; <code>accept</code> završava samo svoj lanac.</td></tr>
-<tr><td>Po čemu se VLAN razlikuje od podmreže?</td><td>VLAN je L2 domena (ko dijeli okvire), podmreža je L3 adresni opseg; obično su 1:1, ali nisu isto. U Primjeru 3 su dvije mašine u istoj podmreži, ali u različitim VLAN-ovima, pa ne mogu razgovarati.</td></tr>
 <tr><td>Čemu <code>validate</code> u zadatku <code>template</code>?</td><td>Neispravna datoteka se provjeri prije zamjene radne, pa greška u šablonu ne ruši vatrozid.</td></tr>
 </table>
 <h3>Zadaci za samostalni rad</h3>
 <ol>
+<li>U vježbi <code>osnove.sh</code> dodati treći namespace <code>ruo-n3</code> spojen na <code>ruo-n2</code> i podesiti rute tako da <code>ruo-n1</code> doseže <code>ruo-n3</code> preko <code>ruo-n2</code> (uz <code>ip_forward=1</code> na <code>ruo-n2</code>). Objasniti zašto bez forwardinga ping ne prolazi.</li>
+<li>Napisati netplan datoteku za <code>ruo-n1</code> s dvije adrese i jednom rutom, pa je provjeriti naredbom <code>netplan generate</code>.</li>
 <li>U <code>firewall.nft</code> dodati pravilo koje dozvoljava <code>web</code> prema <code>app</code> na port 9090, učitati ga i u <code>test.sh</code> dodati dvije provjere (dozvoljeno 9090, blokirano 9091). Objasniti zašto bez pravila veza ne radi.</li>
 <li>Privremeno ukloniti <code>ct state established,related accept</code> i pokrenuti test. Objasniti šta se desi s odgovorima i zašto se pravilo vraća.</li>
 <li>U <code>vars.yml</code> dodati segment <code>cache</code> (<code>10.40.4.0/24</code>) i pravilo <code>app</code> → <code>cache</code> na port 6379 te segment dodati u <code>SEGMENTI</code> u <code>lab.sh</code>. Pokrenuti rolu dva puta i predati izlaz drugog izvršavanja.</li>
 <li>Svakom pravilu u lancu <code>forward</code> dodati <code>counter</code>, pokrenuti test i objasniti koji brojač je porastao pri kojoj provjeri.</li>
-<li>U <code>vlan.sh</code> dodati treći VLAN (30) s jednom mašinom i proširiti test izolacije (zahtijeva jezgru s VLAN podrškom).</li>
 </ol>
 <div class="note "><span class="lbl">Sljedeća sedmica</span>Mreža i vatrozid su definisani kodom. Sedmica 5 uvodi imenovanje i komunikaciju: DNS zone i zapise (BIND/CoreDNS, Terraform DNS provideri), e-poštu (Postfix, Dovecot, SPF, DKIM, DMARC, TLS/ACME) te SFTP s chroot korisnicima iza vatrozida.</div>
 </section>

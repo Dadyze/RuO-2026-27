@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# s4/p1: "VPC u malom" od Linux network namespace-ova (kontejneri iz sedmice 1 koriste isti mehanizam).
+# s4/p2: "VPC u malom" od Linux network namespace-ova (kontejneri iz sedmice 1 koriste isti mehanizam).
 #
 #   internet (host) --- r-up --- [ruo-rtr] --- r-web --- ruo-web  10.40.1.0/24
 #                                   |--------- r-app --- ruo-app  10.40.2.0/24

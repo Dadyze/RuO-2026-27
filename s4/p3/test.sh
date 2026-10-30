@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# s4/p2: matrica povezivosti. Na svakom odredištu radi TCP slušalac, pa se vidi da li je veza
-# dozvoljena ili blokirana; "očekivano" je politika iz firewall.nft. Zahtijeva lab iz s4/p1 (root).
+# s4/p3: matrica povezivosti. Na svakom odredištu radi TCP slušalac, pa se vidi da li je veza
+# dozvoljena ili blokirana; "očekivano" je politika iz firewall.nft. Zahtijeva lab iz s4/p2 (root).
 set -uo pipefail
 export PATH="$PATH:/usr/sbin:/sbin"
 

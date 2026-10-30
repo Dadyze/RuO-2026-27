@@ -21,7 +21,7 @@ need_libvirt = virsh -c qemu:///system list >/dev/null 2>&1 || { echo "libvirt n
   s2-p4 s2-p4-build s2-p4-vm s2-p4-clean \
   s3-p1 s3-p1-apply s3-p2-vault s3-p2 s3-p2-apply s3-p3 s3-p3-apply s3-p3-clean \
   s3-p4 s3-p4-config s3-p4-persist s3-p4-clean s3-p5 s3-p5-up s3-p5-heal s3-p5-clean \
-  s4-p1 s4-p1-up s4-p1-clean s4-p2 s4-p2-apply s4-p3 s4-p3-up s4-p3-clean \
+  s4-p1 s4-p1-lab s4-p1-clean s4-p2 s4-p2-up s4-p2-clean s4-p3 s4-p3-apply \
   s4-p4 s4-p4-apply s4-p4-clean s4-clean
 
 ##@ Pomoć
@@ -162,44 +162,44 @@ s3-p5-heal: ## briše jedan Pod: Deployment ga vraća
 s3-p5-clean: ## briše kind klaster
 > kind delete cluster --name ruo
 
-##@ Sedmica 4: mreža i vatrozid kao kod (lab su Linux network namespace-ovi; naredbe -up traže sudo)
-s4-p1: ## mrežni lab: ispis naredbi (DRY=1), ništa se ne mijenja
-> DRY=1 bash s4/p1/lab.sh up
-s4-p1-up: ## [opcionalno] stvara ruter + web/app/db segmente (namespace-ovi)
-> sudo bash s4/p1/lab.sh up && sudo bash s4/p1/lab.sh status
-s4-p1-clean: ## briše lab
-> -sudo bash s4/p1/lab.sh down
+##@ Sedmica 4: mreža i vatrozid kao kod (vježbe su u Linux network namespace-ovima; naredbe -lab/-up/-apply traže sudo)
+s4-p1: ## osnove: pregled mreže računara (ip link/addr/route), samo čita
+> bash s4/p1/osnove.sh pregled
+s4-p1-lab: ## [opcionalno] vježba: dodaj/promijeni/obriši adresu, sučelje i rutu (PAUZA=1 čeka Enter)
+> sudo PAUZA=$(PAUZA) bash s4/p1/osnove.sh vjezba
+s4-p1-clean: ## briše namespace-ove vježbe
+> -sudo bash s4/p1/osnove.sh down
 
-s4-p2: ## nftables: provjera sintakse datoteke (nft -c), bez učitavanja
+s4-p2: ## mrežni lab: ispis naredbi (DRY=1), ništa se ne mijenja
+> DRY=1 bash s4/p2/lab.sh up
+s4-p2-up: ## [opcionalno] stvara ruter + web/app/db segmente (namespace-ovi)
+> sudo bash s4/p2/lab.sh up && sudo bash s4/p2/lab.sh status
+s4-p2-clean: ## briše lab
+> -sudo bash s4/p2/lab.sh down
+
+s4-p3: ## nftables: provjera sintakse datoteke (nft -c), bez učitavanja
 > @$(call need,nft)
-> sudo nft -c -f s4/p2/firewall.nft && echo "firewall.nft je ispravan"
-s4-p2-apply: s4-p2 ## [opcionalno] učita pravila u ruter i pokrene matricu povezivosti (traži s4-p1-up)
+> sudo nft -c -f s4/p3/firewall.nft && echo "firewall.nft je ispravan"
+s4-p3-apply: s4-p3 ## [opcionalno] učita pravila u ruter i pokrene matricu povezivosti (traži s4-p2-up)
 > @$(call banner,PRIJE: ravna mreža, sve je dozvoljeno)
-> sudo bash s4/p2/test.sh
-> sudo ip netns exec ruo-rtr nft -f s4/p2/firewall.nft
+> sudo bash s4/p3/test.sh
+> sudo ip netns exec ruo-rtr nft -f s4/p3/firewall.nft
 > @$(call banner,POSLIJE: samo ono što politika dozvoljava)
-> sudo bash s4/p2/test.sh
-
-s4-p3: ## Linux bridge + VLAN: ispis naredbi (DRY=1)
-> DRY=1 bash s4/p3/vlan.sh up
-s4-p3-up: ## [opcionalno] bridge s vlan_filtering + test izolacije (traži kernel s 8021q i bridge VLAN podrškom)
-> sudo bash s4/p3/vlan.sh up && sudo bash s4/p3/vlan.sh test
-s4-p3-clean: ## briše VLAN lab
-> -sudo bash s4/p3/vlan.sh down
+> sudo bash s4/p3/test.sh
 
 s4-p4: ## Ansible rola vatrozida iz podataka: syntax-check, --check --diff
 > @$(call need,ansible-playbook)
 > cd s4/p4 && ansible-playbook site.yml --syntax-check
 > cd s4/p4 && ansible-playbook site.yml $(ANSIBLE_ARGS) -e '{"fw_instaliraj_paket": false}' --check --diff
-s4-p4-apply: ## [opcionalno] primijeni rolu na ruter iz laba, dva puta (idempotentnost), pa matrica (traži s4-p1-up)
+s4-p4-apply: ## [opcionalno] primijeni rolu na ruter iz laba, dva puta (idempotentnost), pa matrica (traži s4-p2-up)
 > @$(call banner,1. izvrsavanje: ocekujemo changed > 0)
 > cd s4/p4 && ansible-playbook site.yml $(ANSIBLE_ARGS) -e '{"fw_instaliraj_paket": false}'
 > @$(call banner,2. izvrsavanje: ocekujemo changed=0)
 > cd s4/p4 && ansible-playbook site.yml $(ANSIBLE_ARGS) -e '{"fw_instaliraj_paket": false}'
-> sudo bash s4/p2/test.sh
+> sudo bash s4/p3/test.sh
 s4-p4-clean: ## briše generisana pravila
 > sudo rm -f /etc/nftables.d/ruo.nft
-s4-clean: s4-p3-clean s4-p1-clean s4-p4-clean ## čisti cijelu sedmicu 4
+s4-clean: s4-p1-clean s4-p2-clean s4-p4-clean ## čisti cijelu sedmicu 4
 
 ##@ Skupno
 all: check s2-p1 s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4 s3-p5 s4-p1 s4-p2 s4-p3 s4-p4 ## svi primjeri redom, sekvencijalno (idempotentno: može se ponoviti)

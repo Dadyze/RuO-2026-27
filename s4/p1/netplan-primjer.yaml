@@ -1,0 +1,12 @@
+# Trajna konfiguracija mreže na Ubuntuu (netplan). Naredbe ip mijenjaju stanje samo do restarta;
+# ova datoteka opisuje isto što i ip addr add / ip route add, ali kao kod koji preživi restart.
+# Primjena: sudo cp netplan-primjer.yaml /etc/netplan/60-ruo.yaml && sudo netplan try
+network:
+  version: 2
+  ethernets:
+    eth0:
+      addresses:
+        - 10.60.0.1/24          # ip addr add 10.60.0.1/24 dev eth0
+      routes:
+        - to: 10.70.0.0/24      # ip route add 10.70.0.0/24 via 10.60.0.22
+          via: 10.60.0.22

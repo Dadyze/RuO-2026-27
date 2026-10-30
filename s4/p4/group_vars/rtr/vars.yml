@@ -15,7 +15,7 @@ fw_pravila:                      # segment -> segment (slojevi: web -> app -> db
 
 fw_izlaz: [web, app]             # segmenti kojima je dozvoljen izlaz prema internetu (db nije)
 
-# U labu se pravila učitavaju u namespace rutera iz s4/p1; na pravom ruteru ostaje samo "nft".
+# U labu se pravila učitavaju u namespace rutera iz s4/p2; na pravom ruteru ostaje samo "nft".
 fw_nft_cmd: ip netns exec ruo-rtr nft
 fw_dest: /etc/nftables.d/ruo.nft
 fw_instaliraj_paket: true

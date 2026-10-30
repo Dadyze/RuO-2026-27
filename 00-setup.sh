@@ -48,8 +48,8 @@ sudo apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   git make curl wget gnupg lsb-release ca-certificates software-properties-common \
   python3 python3-yaml openssh-client ansible \
-  iproute2 nftables
-ok "git, make, curl, ansible, iproute2, nftables"
+  iproute2 iputils-ping nftables
+ok "git, make, curl, ansible, iproute2, iputils-ping, nftables"
 
 step "3/8 HashiCorp repozitorij: Terraform i Packer"
 KEYRING=/usr/share/keyrings/hashicorp-archive-keyring.gpg

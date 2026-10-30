@@ -1,5 +1,5 @@
 #!/usr/sbin/nft -f
-# s4/p2: segmentacija web/app/db na ruteru (ruo-rtr). Učitava se atomski: cijela datoteka ili ništa.
+# s4/p3: segmentacija web/app/db na ruteru (ruo-rtr). Učitava se atomski: cijela datoteka ili ništa.
 # Idiom "table ...; delete table ...; table ... { }" čini učitavanje idempotentnim bez diranja tuđih tabela.
 
 define web    = 10.40.1.0/24

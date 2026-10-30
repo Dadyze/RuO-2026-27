@@ -10,7 +10,7 @@ prava datoteka, a pokreće se jednom naredbom `make`, pa se na nastavi odmah vid
 |---|---|---|
 | 2 | Uvod u IaC: virtualne mašine kao kod | `s2/p1` Terraform (state, drift), `s2/p2` cloud-init, `s2/p3` Terraform + libvirt VM, `s2/p4` Packer |
 | 3 | Konfiguracija i kontejneri kao kod | `s3/p1` Ansible, `s3/p2` role + Vault, `s3/p3` Terraform + Ansible, `s3/p4` Dockerfile + Compose, `s3/p5` Kubernetes |
-| 4 | Mrežna konfiguracija i firewall kao kod | `s4/p1` mrežni lab (namespace-ovi), `s4/p2` nftables, `s4/p3` bridge + VLAN, `s4/p4` Ansible rola vatrozida |
+| 4 | Mrežna konfiguracija i firewall kao kod | `s4/p1` osnove mreže (`ip` adrese, sučelja, rute), `s4/p2` mrežni lab (ruter, NAT, segmenti), `s4/p3` nftables, `s4/p4` Ansible rola vatrozida |
 
 Bilješke (PDF) uz primjere su u mapi [`docs/`](docs/). Svaki primjer ima i objašnjenje pozadine (KVM/QEMU/libvirt, cloud-init, Ansible, Docker, Kubernetes) u bilješkama.
 
@@ -133,7 +133,7 @@ Sve se pokreće u **Linux okruženju**: Ubuntu 24.04 ili **WSL2** na Windowsu (o
 | Packer | `s2/p4` | HashiCorp apt repozitorij (niže) |
 | libvirt / KVM | `s2/p3`, `s2/p4`, `s3/p3` | samo za primjere s virtualnim mašinama |
 | `kubectl`, `kind` | `s3/p5` | samo za pokretanje klastera; dry-run radi i bez njih |
-| `ip`, `nft` | `s4/*` | iproute2, nftables (instalira `00-setup.sh`); `-up` ciljevi traže `sudo` |
+| `ip`, `ping`, `nft` | `s4/*` | iproute2, iputils-ping, nftables (instalira `00-setup.sh`); `-up` ciljevi traže `sudo` |
 
 Za većinu primjera **nije potreban račun u oblaku i ništa ne košta**. Nijedan primjer ne koristi plaćene usluge.
 
@@ -212,9 +212,9 @@ Izuzeci koji se mogu bezbrijetno izvršiti jer rade lokalno i ne koštaju ništa
 | `make s3-p4-persist` / `s3-p4-clean` | podaci u volumenu / čišćenje | lokalni kontejneri |
 | `make s3-p5` | Kubernetes manifest, dry-run | ne |
 | `make s3-p5-up` / `s3-p5-heal` / `s3-p5-clean` | kind klaster, samoizlječenje, brisanje | lokalni kontejneri |
-| `make s4-p1` / `s4-p1-up` | mrežni lab: ispis naredbi / ruter i segmenti web/app/db (namespace-ovi) | ne / da (namespace-ovi, sudo) |
-| `make s4-p2` / `s4-p2-apply` | nftables: `nft -c` / učitavanje i matrica povezivosti PRIJE i POSLIJE | ne / da (ruter laba) |
-| `make s4-p3` / `s4-p3-up` | bridge + VLAN: ispis naredbi / izvršavanje (traži 8021q) | ne / da |
+| `make s4-p1` / `s4-p1-lab` | osnove mreže: pregled (samo čita) / vježba dodaj-promijeni-obriši adresu, sučelje i rutu (`PAUZA=1` čeka Enter) | ne / da (namespace-ovi, sudo) |
+| `make s4-p2` / `s4-p2-up` | mrežni lab: ispis naredbi / ruter i segmenti web/app/db | ne / da (namespace-ovi, sudo) |
+| `make s4-p3` / `s4-p3-apply` | nftables: `nft -c` / učitavanje i matrica povezivosti PRIJE i POSLIJE | ne / da (ruter laba) |
 | `make s4-p4` / `s4-p4-apply` | Ansible rola vatrozida: `--check` / dva izvršavanja + matrica | ne / da |
 | `make s4-clean` | čisti sve iz sedmice 4 | uklanja |
 | `make all` | svi primjeri redom (sekvencijalno, idempotentno) | lokalna datoteka i kontejneri |
@@ -239,7 +239,7 @@ make s3-p2      # 6. role + Vault
 make s3-p3      # 7. Terraform + Ansible (plan)
 make s3-p4      # 8. Dockerfile + Compose
 make s3-p5      # 9. Kubernetes (dry-run)
-make s4-p1      # 10. mrežni lab (ispis naredbi), zatim s4-p2 ... s4-p4
+make s4-p1      # 10. osnove mreže (pregled), zatim s4-p2 ... s4-p4
 make all        # sve gore odjednom, redom
 ```
 
@@ -275,10 +275,10 @@ Makefile        # make help
 docs/           # bilješke s predavanja (PDF)
 s2/p1..p4/      # sedmica 2: Terraform, cloud-init, libvirt VM, Packer
 s3/p1..p5/      # sedmica 3: Ansible, role + Vault, Terraform + Ansible, Compose, Kubernetes
-s4/p1..p4/      # sedmica 4: mrežni lab, nftables, bridge + VLAN, Ansible rola vatrozida
+s4/p1..p4/      # sedmica 4: osnove mreže (ip), mrežni lab, nftables, Ansible rola vatrozida
 ```
 
 Status provjere: `make help`, `make check`, `s2-p1` (cijeli tok s driftom), `s2-p2`, `s3-p1` (ping, syntax-check) i
 `s3-p2` (Vault) su izvršeni; primjeri koji traže KVM, Packer, Docker daemon ili klaster (`s2-p3`, `s2-p4`, `s3-p3`,
-`s3-p4`, `s3-p5`) napisani su prema bilješkama, ali nisu pokretani u razvojnom okruženju. Sedmica 4: `s4-p1`, `s4-p2` i `s4-p4` su izvršeni od početka do kraja (lab, vatrozid s matricom povezivosti, Ansible rola dva puta); `s4-p3` (bridge + VLAN) je provjeren samo kao ispis naredbi (`DRY=1`) jer razvojna jezgra nema podršku za 802.1Q i bridge VLAN. Ako nešto ne radi, prvo ih
+`s3-p4`, `s3-p5`) napisani su prema bilješkama, ali nisu pokretani u razvojnom okruženju. Sedmica 4: svi primjeri (`s4-p1` do `s4-p4`) su izvršeni od početka do kraja u razvojnom okruženju (vježba s adresama i rutama, lab, vatrozid s matricom povezivosti, Ansible rola dva puta); `netplan-primjer.yaml` je provjeren naredbom `netplan generate`. Ako nešto ne radi, prvo ih
 pokrenuti u `plan`/`validate` obliku i javiti asistentu.
