@@ -48,10 +48,8 @@ sudo apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   git make curl wget gnupg lsb-release ca-certificates software-properties-common \
   python3 python3-yaml openssh-client ansible \
-  iproute2 nftables wireguard-tools
-# wireguard-go: korisnička zamjena ako kernel nema WireGuard modul (s4/p3); nije obavezan
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-go || warn "wireguard-go nije dostupan (potreban samo bez kernelskog modula)"
-ok "git, make, curl, ansible, iproute2, nftables, wireguard-tools"
+  iproute2 nftables
+ok "git, make, curl, ansible, iproute2, nftables"
 
 step "3/8 HashiCorp repozitorij: Terraform i Packer"
 KEYRING=/usr/share/keyrings/hashicorp-archive-keyring.gpg
@@ -137,7 +135,7 @@ else
 fi
 
 step "8/8 Provjera"
-for t in git make terraform packer ansible docker kubectl kind virsh nft wg ip; do
+for t in git make terraform packer ansible docker kubectl kind virsh nft ip; do
   if have "$t"; then ok "$t"; else warn "$t nije instaliran"; fi
 done
 # sed -n 1p cita cijeli ulaz (head -1 bi uz pipefail prekinuo skriptu zbog SIGPIPE)

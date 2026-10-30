@@ -1,0 +1,5 @@
+- name: Vatrozid rutera iz podataka
+  hosts: rtr
+  become: true
+  roles:
+    - firewall

@@ -54,8 +54,7 @@ stanje() {
 }
 
 dolje() {
-  pkill -x wireguard-go 2>/dev/null || true             # korisnički WireGuard (s4/p3) drži namespace živim
-  for ns in ruo-klijent ruo-web ruo-app ruo-db ruo-rtr; do ip netns del "$ns" 2>/dev/null && echo "obrisan $ns" || true; done
+  for ns in ruo-web ruo-app ruo-db ruo-rtr; do ip netns del "$ns" 2>/dev/null && echo "obrisan $ns" || true; done
   ip link del h-up 2>/dev/null || true                  # veth par (h-up) obično nestane s ruterom, ali ne ako ga nešto drži
   ip route del 10.40.0.0/16 2>/dev/null || true
 }

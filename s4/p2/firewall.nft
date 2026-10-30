@@ -6,7 +6,6 @@ define web    = 10.40.1.0/24
 define app    = 10.40.2.0/24
 define db     = 10.40.3.0/24
 define uplink = "r-up"
-define vpn_if = "wg-rtr"                         # WireGuard sučelje (s4/p3)
 
 table inet ruo
 delete table inet ruo
@@ -25,7 +24,6 @@ table inet ruo {
     ip saddr $web ip daddr $app tcp dport 8080 accept           # web -> app: samo aplikacijski port
     ip saddr $app ip daddr $db  tcp dport 5432 accept           # app -> db: samo baza
     ip saddr { $web, $app } oifname $uplink accept              # izlaz prema internetu: web i app, ne db
-    iifname $vpn_if ip daddr $app tcp dport { 22, 8080 } accept # VPN klijent -> app (SSH, aplikacija), ne db
 
     limit rate 5/minute log prefix "ruo-drop: "                 # sve ostalo pada (policy drop)
   }
@@ -35,7 +33,6 @@ table inet ruo {
     type filter hook input priority filter; policy drop;
     iifname "lo" accept
     ct state established,related accept
-    udp dport 51820 accept                                      # WireGuard handshake (s4/p3)
     icmp type echo-request limit rate 5/second accept
   }
 

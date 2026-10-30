@@ -1,0 +1,21 @@
+# Politika mreže kao PODACI: pravila se mijenjaju ovdje, a šablon ih pretvara u nftables.
+fw_uplink: r-up
+
+fw_segmenti:                     # ime: podmreža
+  web: 10.40.1.0/24
+  app: 10.40.2.0/24
+  db: 10.40.3.0/24
+
+fw_javno:                        # internet -> segment
+  - { do: web, portovi: [80, 443] }
+
+fw_pravila:                      # segment -> segment (slojevi: web -> app -> db)
+  - { od: web, do: app, portovi: [8080] }
+  - { od: app, do: db,  portovi: [5432] }
+
+fw_izlaz: [web, app]             # segmenti kojima je dozvoljen izlaz prema internetu (db nije)
+
+# U labu se pravila učitavaju u namespace rutera iz s4/p1; na pravom ruteru ostaje samo "nft".
+fw_nft_cmd: ip netns exec ruo-rtr nft
+fw_dest: /etc/nftables.d/ruo.nft
+fw_instaliraj_paket: true

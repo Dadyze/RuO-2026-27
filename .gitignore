@@ -16,8 +16,6 @@ s2/p4/output/
 .vault_pass
 s3/p2/group_vars/web/vault.yml
 s3/p3/group_vars/web/vault.yml
-# WireGuard ključevi: NIKAD u Git
-s4/p3/keys/
 # ostalo
 __pycache__/
 *.retry
