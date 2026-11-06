@@ -14,7 +14,8 @@ variable "ime" {
 
 variable "imena" {
   type    = list(string)
-  default = ["file_1", "file_2", "file_3"]
+  default = ["file_1", "file_2", "file_3"] # tf plan -> apply pa onda obrisati
+                                           # "file_2" i opet tf plan -> apply.
 }
 
 # docs: https://developer.hashicorp.com/terraform/language/meta-arguments/for_each
