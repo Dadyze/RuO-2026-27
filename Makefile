@@ -143,6 +143,17 @@ s3-p4-persist: ## down pa up: podaci u volumenu prežive
 > curl -s localhost:8080
 s3-p4-clean: ## down -v (briše i volumen)
 > cd s3/p4 && docker compose down -v
+s3-p4-r: ## [rješenje] nginx proxy ispred web-a: build, up, 3 posjete preko nginxa
+> @$(call need,docker)
+> cd s3/p4-rjesenje && docker compose config -q
+> cd s3/p4-rjesenje && docker compose up -d --build --wait
+> cd s3/p4-rjesenje && docker compose ps
+> @$(call banner,3 zahtjeva preko nginxa: brojac raste)
+> for i in 1 2 3; do curl -s localhost:8080; done
+> @$(call banner,odgovara nginx)
+> curl -sI localhost:8080 | grep -i '^server'
+s3-p4-r-clean: ## [rješenje] down -v
+> cd s3/p4-rjesenje && docker compose down -v
 
 s3-p5: ## Kubernetes: dry-run manifesta (bez klastera)
 > @$(call need,kubectl)
