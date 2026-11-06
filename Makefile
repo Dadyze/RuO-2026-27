@@ -22,6 +22,7 @@ need_libvirt = virsh -c qemu:///system list >/dev/null 2>&1 || { echo "libvirt n
   s3-p1 s3-p1-apply s3-p2-vault s3-p2 s3-p2-apply s3-p3 s3-p3-apply s3-p3-clean \
   s3-p4 s3-p4-config s3-p4-persist s3-p4-clean s3-p5 s3-p5-up s3-p5-heal s3-p5-clean \
   s4-p1 s4-p1-lab s4-p1-clean s4-p2 s4-p2-up s4-p2-clean s4-p3 s4-p3-apply \
+  s3-p4-r s3-p4-r-clean \
   s4-p4 s4-p4-apply s4-p4-clean s4-clean
 
 ##@ Pomoć
