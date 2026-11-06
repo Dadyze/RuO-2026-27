@@ -1,0 +1,12 @@
+; s5/p1: reverzna zona za 10.50.0.0/24 (adresa -> ime, PTR). Mail serveri provjeravaju da se
+; ime i adresa slažu u oba smjera (FCrDNS), pa PTR za mail.ruo.lab nije ukras.
+$TTL 300
+$ORIGIN 0.50.10.in-addr.arpa.
+@   IN SOA  ns1.ruo.lab. hostmaster.ruo.lab. ( 2026111301 3600 600 1209600 300 )
+@   IN NS   ns1.ruo.lab.
+@   IN NS   ns2.ruo.lab.
+1   IN PTR  admin.ruo.lab.
+22  IN PTR  sftp.ruo.lab.
+25  IN PTR  mail.ruo.lab.
+53  IN PTR  ns1.ruo.lab.
+54  IN PTR  ns2.ruo.lab.

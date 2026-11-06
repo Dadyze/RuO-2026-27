@@ -1,0 +1,19 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Vatrozid SFTP servera: SSH samo iz dozvoljenih mreža, sve ostalo dolazno se odbacuje.
+table inet ruo5sftp
+delete table inet ruo5sftp
+
+table inet ruo5sftp {
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iifname "lo" accept
+    ct state established,related accept
+    ct state invalid drop
+    icmp type echo-request limit rate 5/second accept
+{% if sftp_dozvoljeni %}
+    ip saddr { {{ sftp_dozvoljeni | join(', ') }} } tcp dport 22 counter accept
+{% endif %}
+    tcp dport 22 counter drop comment "ssh iz nedozvoljene mreže"
+  }
+}

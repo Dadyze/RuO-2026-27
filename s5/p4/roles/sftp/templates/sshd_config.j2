@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+# SFTP server: samo ključevi, samo članovi grupe {{ sftp_grupa }}, svaki zatvoren u svoj direktorij.
+ListenAddress {{ sftp_adresa }}
+Port 22
+HostKey {{ sftp_etc }}/ssh_host_ed25519_key
+PidFile /run/ruo5-sftp-sshd.pid
+LogLevel VERBOSE
+
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile {{ sftp_etc }}/kljucevi/%u
+UsePAM no
+AllowGroups {{ sftp_grupa }}
+
+# internal-sftp: SFTP poslužuje sam sshd, pa u chroot direktoriju ne trebaju programi ni biblioteke
+Subsystem sftp internal-sftp
+
+Match Group {{ sftp_grupa }}
+  ChrootDirectory {{ sftp_root }}/%u
+  ForceCommand internal-sftp -l INFO
+  PermitTTY no
+  AllowTcpForwarding no
+  AllowAgentForwarding no
+  X11Forwarding no

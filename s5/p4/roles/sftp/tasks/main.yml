@@ -1,0 +1,90 @@
+- name: OpenSSH server je instaliran
+  ansible.builtin.apt: { name: openssh-server, state: present, cache_valid_time: 3600 }
+  when: sftp_instaliraj_paket
+
+- name: grupa SFTP korisnika
+  ansible.builtin.group: { name: "{{ sftp_grupa }}", system: true }
+
+- name: korisnici bez shella i bez lozinke (samo ključ)
+  ansible.builtin.user:
+    name: "{{ item.ime }}"
+    group: "{{ sftp_grupa }}"
+    shell: /usr/sbin/nologin
+    create_home: false
+    home: /upload
+    password: "*"                       # "*" = nema lozinke, ali račun nije zaključan ("!")
+  loop: "{{ sftp_korisnici }}"
+  loop_control: { label: "{{ item.ime }}" }
+
+- name: direktoriji (chroot korijen mora pripadati root-u i niko drugi ne smije pisati u njega)
+  ansible.builtin.file: { path: "{{ item }}", state: directory, owner: root, group: root, mode: "0755" }
+  loop:
+    - "{{ sftp_root }}"
+    - "{{ sftp_etc }}"
+    - "{{ sftp_etc }}/kljucevi"
+    - /run/sshd
+
+- name: chroot korijen po korisniku (root:root 0755)
+  ansible.builtin.file: { path: "{{ sftp_root }}/{{ item.ime }}", state: directory, owner: root, group: root, mode: "0755" }
+  loop: "{{ sftp_korisnici }}"
+  loop_control: { label: "{{ item.ime }}" }
+
+- name: jedini direktorij u koji korisnik piše
+  ansible.builtin.file:
+    path: "{{ sftp_root }}/{{ item.ime }}/upload"
+    state: directory
+    owner: "{{ item.ime }}"
+    group: "{{ sftp_grupa }}"
+    mode: "0750"
+  loop: "{{ sftp_korisnici }}"
+  loop_control: { label: "{{ item.ime }}" }
+
+- name: javni ključevi korisnika (vlasnik je root, pa ih korisnik ne može mijenjati)
+  ansible.builtin.copy:
+    content: "{{ item.kljuc }}\n"
+    dest: "{{ sftp_etc }}/kljucevi/{{ item.ime }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ sftp_korisnici }}"
+  loop_control: { label: "{{ item.ime }}" }
+
+- name: ključ servera (pravi se jednom; njegov otisak klijenti provjeravaju)
+  ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C sftp.ruo.lab -f {{ sftp_etc }}/ssh_host_ed25519_key
+  args: { creates: "{{ sftp_etc }}/ssh_host_ed25519_key" }
+
+- name: sshd_config iz šablona (sshd -t provjerava PRIJE zamjene)
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: "{{ sftp_etc }}/sshd_config"
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: restartuj sshd
+
+- name: vatrozid iz šablona (nft -c provjerava PRIJE zamjene)
+  ansible.builtin.template:
+    src: sftp.nft.j2
+    dest: "{{ sftp_etc }}/sftp.nft"
+    mode: "0644"
+    validate: nft -c -f %s
+  notify: učitaj vatrozid
+
+- name: handleri se izvršavaju odmah (restart prije provjere da servis radi)
+  ansible.builtin.meta: flush_handlers
+
+# servisi moraju raditi i kad se ništa nije promijenilo (npr. lab je ponovo podignut): changed samo ako je pokrenut
+- name: vatrozid je učitan
+  ansible.builtin.shell: |
+    {{ sftp_u_ns }} nft list table inet ruo5sftp >/dev/null 2>&1 && exit 0
+    {{ sftp_u_ns }} nft -f {{ sftp_etc }}/sftp.nft && echo ucitan
+  register: fw
+  changed_when: "'ucitan' in fw.stdout"
+  when: not ansible_check_mode
+
+- name: sshd radi
+  ansible.builtin.shell: |
+    pgrep -F /run/ruo5-sftp-sshd.pid -x sshd >/dev/null 2>&1 && exit 0
+    {{ sftp_u_ns }} /usr/sbin/sshd -f {{ sftp_etc }}/sshd_config -E {{ sftp_log }} && echo pokrenut
+  register: sshd
+  changed_when: "'pokrenut' in sshd.stdout"
+  when: not ansible_check_mode

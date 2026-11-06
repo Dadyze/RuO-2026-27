@@ -22,7 +22,9 @@ need_libvirt = virsh -c qemu:///system list >/dev/null 2>&1 || { echo "libvirt n
   s3-p1 s3-p1-apply s3-p2-vault s3-p2 s3-p2-apply s3-p3 s3-p3-apply s3-p3-clean \
   s3-p4 s3-p4-config s3-p4-persist s3-p4-clean s3-p5 s3-p5-up s3-p5-heal s3-p5-clean \
   s4-p1 s4-p1-lab s4-p1-clean s4-p2 s4-p2-up s4-p2-clean s4-p3 s4-p3-apply \
-  s4-p4 s4-p4-apply s4-p4-clean s4-clean
+  s4-p4 s4-p4-apply s4-p4-clean s4-clean \
+  s5-lab s5-dns s5-p1 s5-p1-up s5-p1-serial s5-p2 s5-p2-apply s5-p2-clean \
+  s5-p3 s5-p3-up s5-p3-clean s5-p4-kljucevi s5-p4 s5-p4-apply s5-p4-clean s5-clean
 
 ##@ Pomoć
 help: ## ovaj popis
@@ -33,7 +35,7 @@ setup: ## instalira sve alate (00-setup.sh)
 > ./00-setup.sh
 
 check: ## provjera da li su alati instalirani
-> @for t in git make terraform packer ansible docker kubectl kind virsh nft; do \
+> @for t in git make terraform packer ansible docker kubectl kind virsh nft named dig postfix dovecot opendkim swaks sshd; do \
 >   if command -v $$t >/dev/null; then printf '  \033[32mok\033[0m     %s\n' $$t; else printf '  \033[33mnema\033[0m   %s\n' $$t; fi; done
 
 run: ## make run EX=s2-p1 (isto što i make s2-p1)
@@ -201,10 +203,83 @@ s4-p4-clean: ## briše generisana pravila
 > sudo rm -f /etc/nftables.d/ruo.nft
 s4-clean: s4-p1-clean s4-p2-clean s4-p4-clean ## čisti cijelu sedmicu 4
 
+##@ Sedmica 5: DNS, e-pošta i SFTP kao kod (lab u namespace-ovima; -up/-apply traže sudo)
+# Terraform u s5-p2 čita TSIG tajnu iz laba; sudo je potreban jer je ključ čitljiv samo root-u
+tf5 = cd s5/p2 && TF_VAR_tsig_secret="$$(sudo bash ../p1/dns.sh kljuc ruo-tf)" terraform
+S5_ANSIBLE = $(ANSIBLE_ARGS) -e '{"sftp_instaliraj_paket": false}'
+
+s5-lab:
+> sudo bash s5/lab.sh up
+s5-dns: s5-lab
+> sudo bash s5/p1/dns.sh up
+
+s5-p1: ## BIND: named-checkconf i named-checkzone nad zonama (bez root-a, ništa se ne pokreće)
+> @$(call need,named-checkconf)
+> bash s5/p1/dns.sh provjera
+s5-p1-up: s5-dns ## [opcionalno] lab, primarni + sekundarni DNS i dig upiti (zapisi, PTR, AXFR, rekurzija)
+> sudo bash s5/p1/dns.sh upiti
+s5-p1-serial: s5-dns ## [opcionalno] izmjena zone bez i sa povećanjem seriala (NOTIFY sekundarnom)
+> sudo bash s5/p1/dns.sh serial
+
+s5-p2: ## Terraform DNS provider (RFC 2136): init, validate, plan bez kontakta sa serverom
+> @$(call need,terraform)
+> cd s5/p2 && terraform init -input=false && terraform validate
+> cd s5/p2 && terraform plan -refresh=false -var tsig_secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+s5-p2-apply: s5-dns ## [opcionalno] apply, ponovni apply (0 changed), drift (nsupdate) i ispravak
+> @$(call need,terraform)
+> cd s5/p2 && terraform init -input=false >/dev/null
+> @$(call banner,1. apply: zapisi u zoni oblak.ruo.lab)
+> $(tf5) apply -auto-approve
+> for n in web app db www; do printf '%-22s %s\n' "$$n.oblak.ruo.lab" "$$(dig +short @10.50.0.54 $$n.oblak.ruo.lab | tr '\n' ' ')"; done
+> @$(call banner,2. apply ponovo: ocekujemo 0 added / 0 changed = idempotentnost)
+> $(tf5) apply -auto-approve | grep -E 'Apply complete|No changes'
+> @$(call banner,3. DRIFT: zapis mijenjamo mimo Terraforma (nsupdate))
+> bash s5/p2/drift.sh
+> $(tf5) plan -detailed-exitcode || [ $$? -eq 2 ]
+> @$(call banner,4. apply vraca zapise na stanje iz koda)
+> $(tf5) apply -auto-approve | grep 'Apply complete'
+> dig +short @10.50.0.53 app.oblak.ruo.lab; dig +short @10.50.0.53 db.oblak.ruo.lab
+s5-p2-clean: ## uklanja zapise (ako DNS radi) i state
+> -$(tf5) destroy -auto-approve
+> cd s5/p2 && rm -rf .terraform terraform.tfstate* tfplan
+
+s5-p3: ## Postfix, Dovecot, OpenDKIM: provjera konfiguracije (bez root-a, ništa se ne pokreće)
+> @$(call need,postconf)
+> @$(call need,doveconf)
+> bash s5/p3/mail.sh provjera
+s5-p3-up: s5-dns ## [opcionalno] TLS, DKIM ključ u DNS-u, servisi; slanje, IMAP, DKIM/SPF/DMARC, relej
+> sudo bash s5/p3/mail.sh up
+> sudo bash s5/p3/mail.sh test
+s5-p3-clean: ## gasi mail servise i briše podatke
+> -sudo bash s5/p3/mail.sh down
+
+s5-p4-kljucevi:
+> @mkdir -p s5/p4/kljucevi
+> @for u in ruo-ana ruo-ben; do test -f s5/p4/kljucevi/$$u || ssh-keygen -q -t ed25519 -N "" -C "$$u@ruo5" -f s5/p4/kljucevi/$$u; done
+s5-p4: s5-p4-kljucevi ## SFTP rola (chroot korisnici + vatrozid): syntax-check, --check --diff
+> @$(call need,ansible-playbook)
+> cd s5/p4 && ansible-playbook site.yml --syntax-check
+> cd s5/p4 && ansible-playbook site.yml $(S5_ANSIBLE) --check --diff
+s5-p4-apply: s5-lab s5-p4-kljucevi ## [opcionalno] rola dva puta (idempotentnost), pa test: chroot, ključevi, vatrozid
+> @$(call banner,1. izvrsavanje: ocekujemo changed > 0)
+> cd s5/p4 && ansible-playbook site.yml $(S5_ANSIBLE)
+> @$(call banner,2. izvrsavanje: ocekujemo changed=0)
+> cd s5/p4 && ansible-playbook site.yml $(S5_ANSIBLE)
+> sudo bash s5/p4/test.sh
+s5-p4-clean: ## gasi sshd laba, briše korisnike ruo-ana/ruo-ben i njihove direktorije
+> -sudo pkill -F /run/ruo5-sftp-sshd.pid -x sshd
+> -for u in ruo-ana ruo-ben; do sudo userdel $$u 2>/dev/null; done; sudo groupdel ruo5-sftp 2>/dev/null; true
+> sudo rm -rf /srv/ruo5-sftp /etc/ruo5/sftp /var/lib/ruo5/sftp-sshd.log /run/ruo5-sftp-sshd.pid
+
+s5-clean: s5-p3-clean s5-p4-clean s5-p2-clean ## čisti cijelu sedmicu 5 (servisi, korisnici, state, lab)
+> -sudo bash s5/p1/dns.sh down
+> -sudo bash s5/lab.sh down
+> -sudo rm -rf /etc/ruo5 /var/lib/ruo5
+
 ##@ Skupno
-all: check s2-p1 s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4 s3-p5 s4-p1 s4-p2 s4-p3 s4-p4 ## svi primjeri redom, sekvencijalno (idempotentno: može se ponoviti)
+all: check s2-p1 s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4 s3-p5 s4-p1 s4-p2 s4-p3 s4-p4 s5-p1 s5-p2 s5-p3 s5-p4 ## svi primjeri redom, sekvencijalno (idempotentno: može se ponoviti)
 > @$(call banner,SVI PRIMJERI ZAVRSENI)
 safe-all: ## sve što ne mijenja sistem (plan/validate/--check/dry-run)
-> $(MAKE) --no-print-directory s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4-config s3-p5 s4-p1 s4-p2 s4-p3 s4-p4
+> $(MAKE) --no-print-directory s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4-config s3-p5 s4-p1 s4-p2 s4-p3 s4-p4 s5-p1 s5-p2 s5-p3 s5-p4
 clean-all: ## čišćenje svih primjera
-> -$(MAKE) --no-print-directory s2-p1-clean s2-p3-clean s2-p4-clean s3-p3-clean s3-p4-clean s3-p5-clean s4-clean
+> -$(MAKE) --no-print-directory s2-p1-clean s2-p3-clean s2-p4-clean s3-p3-clean s3-p4-clean s3-p5-clean s4-clean s5-clean

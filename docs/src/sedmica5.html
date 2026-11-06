@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="bs"><head><meta charset="utf-8">
+<title>RuO – Bilješke s predavanja – Sedmica 5</title>
+<link rel="stylesheet" href="style.css"></head><body>
+
+<header class="top"><img src="logo.png" alt="Univerzitet u Zenici, Politehnički fakultet"><div class="uni"><b>Univerzitet u Zenici</b><span>Politehnički fakultet</span></div></header>
+
+<div class="kicker">Bilješke s predavanja · Sedmica 5</div>
+<h1>DNS, e-pošta i SFTP kao kod</h1>
+<p class="lead">Imenovanje i komunikacija kao kod: DNS zone i zapisi u BIND-u (primarni i sekundarni server), zapisi kao Terraform resursi, e-pošta s Postfixom i Dovecotom uz TLS, SPF, DKIM i DMARC, te SFTP s chroot korisnicima iza vatrozida. Svaki servis se opisuje datotekama, a ishod se provjerava testom.</p>
+
+<table class="meta">
+<tr><td>Predmet</td><td>Računarstvo u oblaku</td></tr>
+<tr><td>Studij</td><td>II ciklus studija, III semestar, akademska godina 2026/27</td></tr>
+<tr><td>Nastavnik</td><td>V. prof. dr. Đulaga Hadžić</td></tr>
+<tr><td>Asistent</td><td>ass. Mr. Adin Jahić</td></tr>
+<tr><td>Termin</td><td>petak, 13.11.2026, 17:15–20:15, Kabinet 3204</td></tr>
+<tr><td>Tema</td><td>DNS, e-pošta i SFTP kao kod</td></tr>
+<tr><td>Kod</td><td>github.com/Dadyze/RuO-2026-27 (mape <code>s5/p1</code> do <code>s5/p4</code> i <code>s5/lab.sh</code>)</td></tr>
+</table>
+
+<section>
+<div class="kicker">Okvir nastavne jedinice</div>
+<h2>Ciljevi i način rada</h2>
+<p>U sedmici 4 je mreža odredila <em>ko s kim smije razgovarati</em>. Ova sedmica uvodi servise preko kojih ljudi i programi stvarno komuniciraju: DNS pretvara imena u adrese, e-pošta prenosi poruke između domena, a SFTP prenosi datoteke. Sva tri servisa su stari i dobro poznati, ali su i čest izvor problema: zaboravljen serial u DNS zoni, mail server koji prosljeđuje tuđu poštu (otvoreni relej) ili SFTP korisnik koji vidi cijeli disk servera. Kad je konfiguracija kod, takve greške se vide u pregledu promjene i hvataju testom.</p>
+<p>Za rad nije potreban račun u oblaku ni domena. Svaki server radi u svom <strong>network namespace-u</strong> (kao u sedmici 4), na zajedničkom virtualnom switchu, a pravi programi (BIND, Postfix, Dovecot, OpenSSH) se pokreću s konfiguracijom iz repozitorija. Domena laba je <code>ruo.lab</code> i postoji samo u labu.</p>
+<p>Nakon nastavne jedinice student je u stanju:</p>
+<ul>
+<li>objasniti razliku između autoritativnog i rekurzivnog DNS servera, napisati zonsku datoteku i provjeriti je alatima <code>named-checkconf</code> i <code>named-checkzone</code>,</li>
+<li>objasniti ulogu SOA seriala, NOTIFY poruke i prijenosa zone između primarnog i sekundarnog servera,</li>
+<li>upravljati DNS zapisima kao Terraform resursima (RFC 2136, TSIG) i prepoznati drift,</li>
+<li>postaviti mail server koji prima poštu za domenu, nije otvoreni relej, traži TLS i prijavu, i potpisuje poruke DKIM-om,</li>
+<li>objasniti SPF, DKIM i DMARC i provjeriti ih na stvarnoj poruci,</li>
+<li>generisati SFTP server s chroot korisnicima, ključevima i vatrozidom iz podataka (Ansible rola) i provjeriti idempotentnost.</li>
+</ul>
+
+<h3>Okruženje i pokretanje</h3>
+<p>Alate za ovu sedmicu (BIND, Postfix, Dovecot, OpenDKIM, swaks, OpenSSH server) instalira <code>00-setup.sh</code>. Sistemske instance tih servisa skripta gasi, jer se servisi pokreću samo u labu. Ako je skripta već pokrenuta ranije, ponovo se pokrene (idempotentna je):</p>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 0 · početak</span></div><pre>cd ~/RuO-2026-27 &amp;&amp; git pull
+./00-setup.sh                    # dodaje bind9, postfix, dovecot, opendkim, swaks, openssh-server
+make check                       # named, dig, postfix, dovecot, opendkim, swaks, sshd moraju biti "ok"
+make s5-p1                       # provjera DNS konfiguracije; zatim s5-p2 ... s5-p4, opcionalni koraci: -up, -apply</pre></div>
+<div class="note "><span class="lbl">Rad bez troškova: provjera umjesto izvršavanja</span>Osnovni cilj svakog primjera samo provjerava kod: <code>named-checkconf</code>/<code>named-checkzone</code>, <code>terraform plan</code>, <code>postconf</code>/<code>doveconf</code> i <code>ansible-playbook --check --diff</code>. Stvarno pokretanje servisa ima sufiks <code>-up</code> ili <code>-apply</code>, traži <code>sudo</code> i dira samo lab: namespace-ove <code>ruo5-*</code>, direktorije <code>/etc/ruo5</code>, <code>/var/lib/ruo5</code>, <code>/var/lib/bind/ruo5</code> i <code>/srv/ruo5-sftp</code>, te dva lab korisnika (<code>ruo-ana</code>, <code>ruo-ben</code>). Sve se briše sa <code>make s5-clean</code>.</div>
+<div class="note warn"><span class="lbl">Redoslijed</span>Primjeri 2 i 3 koriste DNS iz primjera 1 (Terraform piše u njegovu zonu, mail objavljuje DKIM ključ i oslanja se na MX, SPF i PTR zapise). Ciljevi <code>s5-p2-apply</code> i <code>s5-p3-up</code> zato sami podižu lab i DNS ako ne rade. Primjer 4 treba samo lab.</div>
+</section>
+
+<section>
+<div class="kicker">1 · Pojam i pozadina</div>
+<h2>Lab: pet servera na jednom switchu</h2>
+<p>Lab (<code>s5/lab.sh</code>) pravi namespace <code>ruo5-sw</code> s bridgeom <code>br0</code>: to je virtualni switch. Na njega su veth parovima spojeni serveri i sam računar, koji ima adresu <code>10.50.0.1</code> i služi kao administratorska mašina (odavde rade <code>dig</code>, <code>terraform</code> i <code>sftp</code>). Namespace <code>ruo5-van</code> glumi "vanjski" računar: korisnika na laptopu ili tuđi server, pa služi i za negativne testove.</p>
+<figure>
+<svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, sans-serif" font-size="12">
+<rect x="275" y="98" width="170" height="54" rx="8" fill="#e3f3f0" stroke="#0f766e"/>
+<text x="360" y="121" text-anchor="middle" font-weight="700">ruo5-sw (br0)</text><text x="360" y="139" text-anchor="middle" fill="#55677a">virtualni switch</text>
+<g fill="#eef2f6" stroke="#55677a">
+<rect x="10" y="10" width="190" height="52" rx="8"/><rect x="10" y="99" width="190" height="52" rx="8"/><rect x="10" y="188" width="190" height="52" rx="8"/>
+<rect x="520" y="10" width="190" height="52" rx="8"/><rect x="520" y="99" width="190" height="52" rx="8"/><rect x="520" y="188" width="190" height="52" rx="8"/>
+</g>
+<text x="105" y="32" text-anchor="middle" font-weight="700">ruo5-ns1 10.50.0.53</text><text x="105" y="50" text-anchor="middle" fill="#55677a">BIND primarni</text>
+<text x="105" y="121" text-anchor="middle" font-weight="700">ruo5-ns2 10.50.0.54</text><text x="105" y="139" text-anchor="middle" fill="#55677a">BIND sekundarni</text>
+<text x="105" y="210" text-anchor="middle" font-weight="700">računar 10.50.0.1</text><text x="105" y="228" text-anchor="middle" fill="#55677a">admin: dig, terraform, sftp</text>
+<text x="615" y="32" text-anchor="middle" font-weight="700">ruo5-mail 10.50.0.25</text><text x="615" y="50" text-anchor="middle" fill="#55677a">Postfix, Dovecot, OpenDKIM</text>
+<text x="615" y="121" text-anchor="middle" font-weight="700">ruo5-sftp 10.50.0.22</text><text x="615" y="139" text-anchor="middle" fill="#55677a">OpenSSH (samo SFTP) + nft</text>
+<text x="615" y="210" text-anchor="middle" font-weight="700">ruo5-van 10.50.0.66</text><text x="615" y="228" text-anchor="middle" fill="#55677a">"vanjski" računar</text>
+<g stroke="#12212b" fill="none">
+<path d="M200 36C240 36 250 110 275 116"/><path d="M200 125H275"/><path d="M200 214C240 214 250 140 275 134"/>
+<path d="M520 36C480 36 470 110 445 116"/><path d="M520 125H445"/><path d="M520 214C480 214 470 140 445 134"/>
+</g>
+</svg>
+<figcaption>Slika 1. Topologija laba sedmice 5. Svi serveri koriste <code>10.50.0.53</code> kao resolver (datoteka <code>/etc/netns/&lt;ns&gt;/resolv.conf</code>), pa imena iz zone <code>ruo.lab</code> rade unutar laba bez ikakve izmjene na računaru.</figcaption>
+</figure>
+<div class="note bg"><span class="lbl">Pozadina: /etc/netns</span>Naredba <code>ip netns exec ns-ime program</code> pored mreže mijenja i pogled na <code>/etc</code>: datoteka <code>/etc/netns/ns-ime/resolv.conf</code> se za taj program montira preko <code>/etc/resolv.conf</code>. Tako svaki server dobija vlastiti DNS resolver, a računar zadržava svoj. Isti mehanizam se mogao koristiti za cijele direktorije (npr. <code>/etc/postfix</code>), ali primjeri radije zadaju putanju konfiguracije eksplicitno (<code>named -c</code>, <code>postfix -c</code>, <code>dovecot -c</code>, <code>sshd -f</code>), što radi i na pravom serveru.</div>
+</section>
+
+<section>
+<div class="kicker">2 · Pojam i pozadina</div>
+<h2>DNS: zone, zapisi i ko odgovara</h2>
+<p>DNS je distribuirana baza: niko nema cijelu bazu, nego je prostor imena podijeljen na <strong>zone</strong>, a za svaku zonu odgovaraju njeni <strong>autoritativni</strong> serveri. Korijen (<code>.</code>) zna ko odgovara za <code>ba.</code>, ovaj zna ko odgovara za <code>unze.ba.</code>, i tako dalje: to je <strong>delegacija</strong>, a ostvaruje se NS zapisima. Klijenti ne pitaju autoritativne servere direktno, nego <strong>rekurzivni resolver</strong> (onaj iz <code>/etc/resolv.conf</code>, npr. ruter, ISP ili <code>1.1.1.1</code>) koji prolazi lancem delegacija i pamti odgovore onoliko dugo koliko kaže <strong>TTL</strong>.</p>
+<table class="t">
+<tr><th>Zapis</th><th>Značenje</th><th>Primjer iz zone ruo.lab</th></tr>
+<tr><td><code>SOA</code></td><td>početak zone: glavni server, kontakt, <strong>serial</strong> i tajmeri sekundarnih</td><td><code>ns1.ruo.lab. hostmaster.ruo.lab. 2026111301 ...</code></td></tr>
+<tr><td><code>NS</code></td><td>autoritativni serveri zone ili poddomene (delegacija)</td><td><code>@ NS ns1</code>, <code>oblak NS ns1</code></td></tr>
+<tr><td><code>A</code> / <code>AAAA</code></td><td>ime → IPv4 / IPv6 adresa</td><td><code>mail A 10.50.0.25</code></td></tr>
+<tr><td><code>CNAME</code></td><td>ime je drugo ime za drugo ime (alias)</td><td><code>imap CNAME mail</code></td></tr>
+<tr><td><code>MX</code></td><td>koji server prima poštu za domenu (s prioritetom)</td><td><code>@ MX 10 mail</code></td></tr>
+<tr><td><code>TXT</code></td><td>slobodan tekst; nosi SPF, DKIM i DMARC politike</td><td><code>@ TXT "v=spf1 mx -all"</code></td></tr>
+<tr><td><code>SRV</code></td><td>gdje je servis (port i host), npr. za automatsko podešavanje klijenata</td><td><code>_submission._tcp SRV 0 1 587 mail</code></td></tr>
+<tr><td><code>PTR</code></td><td>adresa → ime (reverzna zona <code>in-addr.arpa</code>)</td><td><code>25 PTR mail.ruo.lab.</code></td></tr>
+<tr><td><code>CAA</code></td><td>koji CA smije izdati TLS certifikat za domenu</td><td><code>@ CAA 0 issue "letsencrypt.org"</code></td></tr>
+</table>
+<div class="note bg"><span class="lbl">Pozadina: primarni, sekundarni i serial</span>Zona se drži na najmanje dva servera, na različitim mrežama, jer bez DNS-a ne radi ništa drugo. <strong>Primarni</strong> ima izvor zone (datoteku ili bazu), a <strong>sekundarni</strong> drži kopiju koju preuzima prijenosom zone (AXFR cijela, IXFR samo razlike). Sekundarni preuzima zonu <em>samo ako je serial u SOA zapisu veći</em> od onog koji već ima. Nakon promjene primarni šalje <strong>NOTIFY</strong>, sekundarni uporedi serial i, ako je veći, povuče promjene; ako NOTIFY ne stigne, provjerava sam svakih <code>refresh</code> sekundi. Zaboravljen serial je zato klasična greška: primarni odgovara novim podacima, sekundarni starim, a klijent dobija jedan ili drugi odgovor zavisno od toga koga je pitao.</div>
+<p>U oblaku se autoritativni DNS najčešće kupuje kao usluga (AWS Route 53, Azure DNS, Google Cloud DNS, Cloudflare): zona je resurs, a zapisi se mijenjaju kroz API. Na sopstvenim serverima se koriste <strong>BIND</strong> (najstariji i najpotpuniji), <strong>Knot</strong> i <strong>PowerDNS</strong>, a <strong>CoreDNS</strong> je DNS server od dodataka (plugin) koji je i zadani DNS u Kubernetesu (vidi napomenu u primjeru 1). Princip je svugdje isti: zona je kod ili podaci, a promjena prolazi provjeru prije objave.</p>
+</section>
+
+<section class="pb">
+<div class="kicker">3 · Primjer 1 · s5/p1</div>
+<h2>BIND: zona kao kod, primarni i sekundarni server</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>Zona <code>ruo.lab</code> je obična tekstualna datoteka u Gitu. Primarni server (<code>ruo5-ns1</code>) je učitava, a sekundarni (<code>ruo5-ns2</code>) nema vlastitih zonskih datoteka: sve preuzima od primarnog. Server je <strong>samo autoritativni</strong> (<code>recursion no</code>): odgovara za svoje zone, a tuđe domene odbija, što sprječava zloupotrebu servera za DNS amplifikacijske napade. Prijenos zone (AXFR) dozvoljen je samo sekundarnom, jer cijela zona otkriva sva imena i adrese u mreži.</div>
+<div class="code long"><div class="hd"><span>dns zone</span><span>Isječak 1 · s5/p1/zone/db.ruo.lab (izvod)</span></div><pre>$TTL 300
+$ORIGIN ruo.lab.
+@         IN SOA  ns1.ruo.lab. hostmaster.ruo.lab. (
+                  2026111301 ; serial
+                  3600       ; refresh: koliko često sekundarni provjerava serial
+                  600        ; retry: ponovni pokušaj ako primarni ne odgovara
+                  1209600    ; expire: sekundarni prestaje odgovarati ako 14 dana nema primarnog
+                  300 )      ; negativni TTL: koliko se pamti odgovor "ne postoji" (NXDOMAIN)
+
+@         IN NS     ns1
+@         IN NS     ns2
+ns1       IN A      10.50.0.53
+ns2       IN A      10.50.0.54
+
+mail      IN A      10.50.0.25
+sftp      IN A      10.50.0.22
+imap      IN CNAME  mail
+
+@         IN MX     10 mail
+@         IN TXT    "v=spf1 mx -all"
+_dmarc    IN TXT    "v=DMARC1; p=reject; adkim=s; aspf=s; rua=mailto:dmarc@ruo.lab"
+_submission._tcp IN SRV 0 1 587 mail
+@         IN CAA    0 issue "letsencrypt.org"
+
+; delegacije dinamičkim zonama (zapise u njima mijenjaju alati, ne ova datoteka)
+oblak       IN NS   ns1
+oblak       IN NS   ns2
+_domainkey  IN NS   ns1
+_domainkey  IN NS   ns2</pre></div>
+<p>Ime bez tačke na kraju je relativno (<code>mail</code> znači <code>mail.ruo.lab.</code>), a <code>@</code> je sama zona. Zapisi <code>ns1</code> i <code>ns2</code> tipa A su <em>glue</em>: bez njih bi resolver, da bi našao <code>ns1.ruo.lab</code>, morao pitati upravo server čiju adresu traži. Zona ima i reverzni par (<code>db.10.50.0</code>): mail serveri provjeravaju da se ime i adresa pošiljaoca slažu u oba smjera.</p>
+<div class="code long"><div class="hd"><span>named.conf</span><span>Isječak 2 · s5/p1/named-primarni.conf (izvod)</span></div><pre>include "keys.conf";                  // TSIG ključevi: generišu se pri pokretanju, nisu u Gitu
+
+options {
+  listen-on { 10.50.0.53; 127.0.0.1; };
+  recursion no;                       // samo autoritativni odgovori
+  allow-transfer { 10.50.0.54; };     // kopiju cijele zone (AXFR) smije uzeti samo sekundarni
+  notify yes;                         // nakon promjene javi sekundarnom (NOTIFY)
+};
+
+// statičke zone: datoteka je u Gitu, mijenja se commitom i povećanjem seriala
+zone "ruo.lab"              { type primary; file "zone/db.ruo.lab"; };
+zone "0.50.10.in-addr.arpa" { type primary; file "zone/db.10.50.0"; };
+
+// dinamičke zone: zapise mijenjaju alati (RFC 2136), svaki ključ samo svoju zonu
+zone "oblak.ruo.lab" {
+  type primary; file "dyn/db.oblak.ruo.lab";
+  update-policy { grant ruo-tf zonesub ANY; };          // Terraform (s5/p2)
+};
+zone "_domainkey.ruo.lab" {
+  type primary; file "dyn/db._domainkey.ruo.lab";
+  update-policy { grant ruo-dkim zonesub TXT; };        // DKIM ključ (s5/p3), samo TXT
+};</pre></div>
+<div class="note"><span class="lbl">Statičke i dinamičke zone</span>Glavna zona je statička: mijenja se samo kroz Git, pa svaka izmjena ima autora, opis i pregled. Zapise koje pravi automatika (Terraform, objava DKIM ključa, ACME izazovi) ima smisla odvojiti u posebne, delegirane zone koje se mijenjaju dinamičkim UPDATE-om. Tako glavna datoteka nikad ne dobije zapis koji nije prošao pregled, a svaki alat ima ključ koji smije mijenjati samo svoju zonu i samo potrebne tipove zapisa (načelo najmanjih prava, kao kod security grupa u sedmici 4).</div>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 3 · pokretanje</span></div><pre>make s5-p1           # named-checkconf -z i named-checkzone (bez root-a, ništa se ne pokreće)
+make s5-p1-up        # opcionalno: lab, primarni i sekundarni server, dig upiti (traži sudo)
+make s5-p1-serial    # opcionalno: izmjena zone bez i sa povećanjem seriala</pre></div>
+<div class="out"><div class="hd">izlaz make s5-p1: provjera bez pokretanja servera</div><pre>== named-checkconf -z: sintaksa konfiguracije i učitavanje svih zona primarnog
+zone ruo.lab/IN: loaded serial 2026111301
+zone 0.50.10.in-addr.arpa/IN: loaded serial 2026111301
+zone oblak.ruo.lab/IN: loaded serial 1
+zone _domainkey.ruo.lab/IN: loaded serial 1
+
+== named-checkconf: sekundarni
+named-sekundarni.conf je ispravan</pre></div>
+<p>U odgovoru na upit, zastavica <code>aa</code> (<em>authoritative answer</em>) znači da je odgovorio server koji je izvor podataka, a ne neki keš. Upozorenje <code>recursion requested but not available</code> je očekivano: <code>dig</code> traži rekurziju, a server je namjerno nema.</p>
+<div class="out"><div class="hd">izlaz make s5-p1-up (skraćeno)</div><pre>== 1. Puni odgovor jednog upita: zaglavlje (flags: aa = autoritativni odgovor) i sekcije
+;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: NOERROR, id: 6332
+;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+;; WARNING: recursion requested but not available
+;; ANSWER SECTION:
+mail.ruo.lab.		300	IN	A	10.50.0.25
+
+== 2. Zapisi zone (kratko): A, CNAME, MX, SRV, CAA
+imap.ruo.lab.		IN	CNAME	mail.ruo.lab.
+mail.ruo.lab.		IN	A	10.50.0.25
+ruo.lab.		IN	MX	10 mail.ruo.lab.
+_submission._tcp.ruo.lab. IN	SRV	0 1 587 mail.ruo.lab.
+ruo.lab.		IN	CAA	0 issue "letsencrypt.org"
+
+== 4. Reverzni upit (PTR): adresa -&gt; ime
+$ dig +short @10.50.0.53 -x 10.50.0.25
+mail.ruo.lab.
+
+== 5. Isti odgovor daje i sekundarni (isti serial u SOA)
+$ dig +short @10.50.0.54 ruo.lab SOA
+ns1.ruo.lab. hostmaster.ruo.lab. 2026111301 3600 600 1209600 300
+
+== 6. Prijenos zone (AXFR): sekundarnom dozvoljen, svima ostalima odbijen
+[ruo5-ns2]$ dig @10.50.0.53 ruo.lab AXFR | grep -c IN
+21
+[ruo5-van]$ dig @10.50.0.53 ruo.lab AXFR
+; Transfer failed.
+
+== 7. Nepostojeće ime (NXDOMAIN) i tuđa domena (REFUSED: server nije rekurzivni)
+$ dig @10.50.0.53 nema.ruo.lab A   -&gt;  status: NXDOMAIN
+$ dig @10.50.0.53 example.com A   -&gt;  status: REFUSED</pre></div>
+<h3>Zašto serial mora rasti</h3>
+<p>Cilj <code>s5-p1-serial</code> dodaje zapis u radnu kopiju zone na primarnom i učitava je (<code>rndc reload</code>), prvo bez promjene seriala, pa s povećanjem. Ime zapisa sadrži vrijeme, pa se demonstracija može ponavljati.</p>
+<div class="out"><div class="hd">izlaz make s5-p1-serial</div><pre>== 1. Dodajemo zapis test164746.ruo.lab u radnu kopiju zone, ali serial OSTAJE 2026111301
+$ rndc reload ruo.lab
+zone reload queued
+primarni:   10.50.0.99   (serial 2026111301)
+sekundarni:              (serial 2026111301, prazno = ne zna za zapis)
+
+== 2. Povećavamo serial (2026111301 -&gt; 2026111302): primarni šalje NOTIFY, sekundarni povlači promjenu
+$ rndc reload ruo.lab
+zone reload queued
+primarni:   10.50.0.99   (serial 2026111302)
+sekundarni: 10.50.0.99   (serial 2026111302)
+
+== 3. Dnevnik sekundarnog: NOTIFY i prijenos (IXFR/AXFR)
+ transfer of 'ruo.lab/IN' from 10.50.0.53#53: Transfer status: success
+ transfer of 'ruo.lab/IN' from 10.50.0.53#53: Transfer completed: 1 messages, 22 records, ... (serial 2026111302)</pre></div>
+<div class="note warn"><span class="lbl">Greške koje se najčešće prave</span>Zaboravljen serial (sekundarni ostaje na starim podacima). Zaboravljena tačka na kraju punog imena: <code>mail.ruo.lab</code> bez tačke postaje <code>mail.ruo.lab.ruo.lab.</code>. CNAME na imenu koje ima i druge zapise (npr. na <code>@</code>, gdje su SOA i NS): standard to zabranjuje, a <code>named-checkzone</code> to javlja. Smanjen serial: sekundarni ga ignoriše dok se ne izjednači, pa se serial nikad ne vraća unazad. Promjena TTL-a se ne vidi odmah: resolveri drže stari odgovor dok ne istekne stari TTL, zato se TTL prije planirane promjene adrese unaprijed smanjuje.</div>
+<div class="note"><span class="lbl">CoreDNS ukratko</span>CoreDNS radi isti posao drugačijim pristupom: svaka funkcija je dodatak u datoteci <code>Corefile</code>. Ista zona bi se poslužila blokom <code>ruo.lab { file db.ruo.lab; transfer { to 10.50.0.54 } }</code>. U Kubernetesu (sedmica 3, <code>kind</code>) CoreDNS je zadani DNS klastera i dodatkom <code>kubernetes</code> pravi zapise za servise (<code>web.default.svc.cluster.local</code>) iz stanja klastera, što je DNS kao kod u najčistijem obliku: zapis postoji zato što postoji resurs.</div>
+</section>
+
+<section>
+<div class="kicker">4 · Primjer 2 · s5/p2</div>
+<h2>DNS zapisi kao Terraform resursi</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>Provider <code>hashicorp/dns</code> mijenja zapise standardnim protokolom za dinamičke izmjene (<strong>RFC 2136</strong>, DNS UPDATE), a svaki zahtjev potpisuje <strong>TSIG</strong> ključem (HMAC-SHA256 nad porukom i vremenom). Server iz primjera 1 prihvata UPDATE za zonu <code>oblak.ruo.lab</code> samo potpisan ključem <code>ruo-tf</code>. Tajna ključa se generiše pri pokretanju laba i nije u Gitu: <code>make</code> je predaje Terraformu kroz varijablu okruženja <code>TF_VAR_tsig_secret</code>, a varijabla je označena <code>sensitive</code>, pa se ne ispisuje u planu.</div>
+<div class="code long"><div class="hd"><span>hcl</span><span>Isječak 4 · s5/p2/main.tf (izvod)</span></div><pre>provider "dns" {
+  update {
+    server        = "10.50.0.53"
+    key_name      = "ruo-tf."
+    key_algorithm = "hmac-sha256"
+    key_secret    = var.tsig_secret
+  }
+}
+
+# servisi iz sedmice 4 (segmenti web/app/db) dobijaju imena; dvije adrese = dva A zapisa (round-robin)
+variable "servisi" {
+  type = map(list(string))
+  default = {
+    web = ["10.40.1.10", "10.40.1.11"]
+    app = ["10.40.2.10"]
+    db  = ["10.40.3.10"]
+  }
+}
+
+resource "dns_a_record_set" "servis" {
+  for_each  = var.servisi
+  zone      = var.zona                      # "oblak.ruo.lab."
+  name      = each.key
+  addresses = each.value
+  ttl       = 300
+}
+
+resource "dns_cname_record" "www" {
+  zone  = var.zona
+  name  = "www"
+  cname = "web.${var.zona}"
+  ttl   = 300
+}</pre></div>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 5 · pokretanje</span></div><pre>make s5-p2           # init, validate i plan bez kontakta sa serverom (-refresh=false)
+make s5-p2-apply     # opcionalno: apply, ponovni apply, drift i ispravak (podiže lab i DNS ako ne rade)
+make s5-p2-clean     # destroy (ako DNS radi) i brisanje statea</pre></div>
+<div class="out"><div class="hd">izlaz make s5-p2-apply: koraci 1 i 2</div><pre>== 1. apply: zapisi u zoni oblak.ruo.lab
+Apply complete! Resources: 5 added, 0 changed, 0 destroyed.
+web.oblak.ruo.lab      10.40.1.10 10.40.1.11
+app.oblak.ruo.lab      10.40.2.10
+db.oblak.ruo.lab       10.40.3.10
+www.oblak.ruo.lab      web.oblak.ruo.lab. 10.40.1.10 10.40.1.11
+
+== 2. apply ponovo: ocekujemo 0 added / 0 changed = idempotentnost
+No changes. Your infrastructure matches the configuration.
+Apply complete! Resources: 0 added, 0 changed, 0 destroyed.</pre></div>
+<p>Odgovore daje <em>sekundarni</em> server (<code>@10.50.0.54</code>): UPDATE je stigao na primarni, a NOTIFY je promjenu odmah prenio dalje. Drift se pravi kao u sedmici 2, ali "ručna" izmjena je ovdje <code>nsupdate</code>: neko briše zapis <code>app</code> i mijenja adresu za <code>db</code> mimo koda. Plan pokazuje tačno to, a apply vraća stanje iz koda:</p>
+<div class="out"><div class="hd">izlaz make s5-p2-apply: koraci 3 i 4 (drift)</div><pre>== 3. DRIFT: zapis mijenjamo mimo Terraforma (nsupdate)
+$ nsupdate -k ruo-tf.key   (briše app.oblak.ruo.lab i mijenja adresu za db)
+app: ''   db: 10.40.3.99
+
+  # dns_a_record_set.servis["app"] will be created
+  # dns_a_record_set.servis["db"] will be updated in-place
+  ~ resource "dns_a_record_set" "servis" {
+      ~ addresses = [
+          - "10.40.3.99",
+          + "10.40.3.10",
+        ]
+Plan: 1 to add, 1 to change, 0 to destroy.
+
+== 4. apply vraca zapise na stanje iz koda
+Apply complete! Resources: 1 added, 1 changed, 0 destroyed.
+10.40.2.10
+10.40.3.10</pre></div>
+<div class="note warn"><span class="lbl">Granica: Terraform vidi samo svoje</span>Zapis koji neko <em>doda</em> ručno, a nije u kodu, Terraform ne primjećuje: state sadrži samo resurse koje je sam napravio. Zato se dinamičke zone daju samo jednom vlasniku (jedan ključ, jedan alat), a za potpunu kontrolu se zona periodično poredi s očekivanim stanjem (npr. <code>dig AXFR</code> i poređenje s izlazom <code>terraform state list</code>).</div>
+<div class="note"><span class="lbl">Isti kod u oblaku</span>Za Route 53 bi se promijenili samo provider i tip resursa, a struktura ostaje: <code>resource "aws_route53_record" "web" { zone_id = aws_route53_zone.z.zone_id, name = "web", type = "A", ttl = 300, records = ["10.40.1.10"] }</code>. Isto vrijedi za <code>azurerm_dns_a_record</code> i <code>cloudflare_record</code>. Lokalni BIND s RFC 2136 je besplatan način da se vježba identičan tok rada: plan, apply, state, drift.</div>
+</section>
+
+<section class="pb">
+<div class="kicker">5 · Pojam i pozadina</div>
+<h2>E-pošta: put poruke i tri provjere pošiljaoca</h2>
+<p>Poruka prolazi kroz više programa. Korisnik je predaje svom serveru preko <strong>submission</strong> porta (587, STARTTLS i obavezna prijava). <strong>MTA</strong> (Postfix) je prosljeđuje serveru primaoca, kojeg nalazi preko <strong>MX</strong> zapisa domene, na port 25. Server primaoca je predaje <strong>MDA</strong>-u (Dovecot, preko LMTP-a) koji je spremi u sanduče, a primalac je čita preko <strong>IMAP</strong>-a (143 sa STARTTLS ili 993 s TLS-om). U labu su pošiljalac i primalac na istom serveru, pa se korak "server na server" svodi na isporuku u lokalno sanduče.</p>
+<figure>
+<svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, sans-serif" font-size="12">
+<defs><marker id="b" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#12212b"/></marker></defs>
+<rect x="8" y="84" width="118" height="58" rx="8" fill="#eef2f6" stroke="#55677a"/>
+<text x="67" y="108" text-anchor="middle" font-weight="700">ana (laptop)</text><text x="67" y="126" text-anchor="middle" fill="#55677a">swaks</text>
+<rect x="210" y="20" width="300" height="190" rx="10" fill="#f6faf9" stroke="#0f766e" stroke-dasharray="4 3"/>
+<text x="360" y="40" text-anchor="middle" fill="#0f766e" font-weight="700">ruo5-mail 10.50.0.25</text>
+<rect x="230" y="84" width="120" height="58" rx="8" fill="#e3f3f0" stroke="#0f766e"/>
+<text x="290" y="108" text-anchor="middle" font-weight="700">Postfix</text><text x="290" y="126" text-anchor="middle" fill="#55677a">MTA, 25 i 587</text>
+<rect x="230" y="160" width="120" height="40" rx="8" fill="#e3f3f0" stroke="#0f766e"/>
+<text x="290" y="185" text-anchor="middle" font-weight="700">OpenDKIM</text>
+<rect x="378" y="84" width="120" height="58" rx="8" fill="#e3f3f0" stroke="#0f766e"/>
+<text x="438" y="108" text-anchor="middle" font-weight="700">Dovecot</text><text x="438" y="126" text-anchor="middle" fill="#55677a">LMTP, IMAP, prijava</text>
+<rect x="594" y="84" width="118" height="58" rx="8" fill="#eef2f6" stroke="#55677a"/>
+<text x="653" y="108" text-anchor="middle" font-weight="700">ben</text><text x="653" y="126" text-anchor="middle" fill="#55677a">IMAP klijent</text>
+<g stroke="#12212b" fill="none" marker-end="url(#b)">
+<path d="M126 113H230"/><path d="M350 113H378"/><path d="M594 113H498"/><path d="M290 142V160"/>
+</g>
+<text x="178" y="104" text-anchor="middle" fill="#55677a">587 TLS+prijava</text>
+<text x="364" y="76" text-anchor="middle" fill="#55677a">LMTP</text>
+<text x="546" y="104" text-anchor="middle" fill="#55677a">143 TLS</text>
+<text x="330" y="156" fill="#55677a">milter: potpis</text>
+<text x="438" y="168" text-anchor="middle" fill="#55677a">sanduče: Maildir</text>
+</svg>
+<figcaption>Slika 2. Put poruke u labu. Postfix prijavu korisnika provjerava preko Dovecota (SASL), pa postoji jedna baza korisnika za slanje i čitanje; OpenDKIM je <em>milter</em>, filter kroz koji Postfix propušta svaku poruku.</figcaption>
+</figure>
+<p>SMTP je nastao kad su se svi serveri poznavali: polje <code>From:</code> može napisati bilo ko. Zato primalac danas provjerava pošiljaoca kroz tri mehanizma, a sva tri su <strong>DNS zapisi</strong> domene pošiljaoca, što ovu temu veže uz primjer 1:</p>
+<table class="t">
+<tr><th>Mehanizam</th><th>Pitanje koje odgovara</th><th>Zapis u labu</th></tr>
+<tr><td><strong>SPF</strong></td><td>Smije li ova IP adresa slati poštu u ime domene (adresa iz <em>envelope</em>, <code>MAIL FROM</code>)?</td><td><code>ruo.lab TXT "v=spf1 mx -all"</code>: samo MX serveri; <code>-all</code> = sve ostalo odbij</td></tr>
+<tr><td><strong>DKIM</strong></td><td>Da li je poruku potpisala domena i da li je neizmijenjena?</td><td><code>ruo2026._domainkey.ruo.lab TXT "v=DKIM1; k=rsa; p=MIIB..."</code>: javni ključ</td></tr>
+<tr><td><strong>DMARC</strong></td><td>Poklapa li se domena iz SPF-a ili DKIM-a s domenom iz <code>From:</code> (poravnanje), i šta raditi ako ne?</td><td><code>_dmarc.ruo.lab TXT "v=DMARC1; p=reject; adkim=s; aspf=s; rua=..."</code></td></tr>
+</table>
+<div class="note bg"><span class="lbl">Pozadina: zašto treba i DMARC</span>SPF i DKIM sami ne štite polje <code>From:</code> koje korisnik vidi. Napadač može proći SPF za svoju domenu (<code>MAIL FROM: x@napadac.com</code>) i potpisati poruku svojim DKIM ključem (<code>d=napadac.com</code>), a u <code>From:</code> napisati <code>direktor@ruo.lab</code>. DMARC traži da bar jedna od dvije provjere prođe <em>za istu domenu</em> koja je u <code>From:</code>. Politika <code>p=reject</code> kaže primaocu da takvu poruku odbije, a <code>rua</code> je adresa na koju primaoci šalju zbirne izvještaje. U praksi se kreće od <code>p=none</code> (samo izvještaji), pa kad izvještaji pokažu da sva legitimna pošta prolazi, prelazi na <code>quarantine</code> i <code>reject</code>. Od 2024. godine Gmail i Yahoo za masovne pošiljaoce traže sve tri provjere.</div>
+<div class="note"><span class="lbl">TLS i ACME</span>Certifikat u labu izdaje lokalni CA (<code>mail.sh</code> ga pravi naredbom <code>openssl</code>), a klijenti ga provjeravaju jer im je CA eksplicitno zadan. Na javnom serveru certifikat izdaje javni CA protokolom <strong>ACME</strong> (Let's Encrypt, <code>certbot</code>), koji prvo provjeri da podnosilac kontroliše domenu: <em>HTTP-01</em> (datoteka na web serveru) ili <em>DNS-01</em> (TXT zapis <code>_acme-challenge</code>). DNS-01 je jedini način za wildcard certifikat i za servere bez web servera, kakav je mail server. Dodatak <code>certbot-dns-rfc2136</code> taj TXT zapis upisuje istim mehanizmom kao Terraform u primjeru 2: dinamičkim UPDATE-om s TSIG ključem, idealno u posebnu, delegiranu zonu <code>_acme-challenge</code>. Zapis <code>CAA</code> u zoni pri tome ograničava koji CA uopće smije izdati certifikat.</div>
+</section>
+
+<section>
+<div class="kicker">6 · Primjer 3 · s5/p3</div>
+<h2>Postfix, Dovecot i OpenDKIM: mail server kao kod</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>Konfiguracija je u četiri datoteke (<code>postfix/main.cf</code>, <code>postfix/master.cf</code>, <code>dovecot/dovecot.conf</code>, <code>opendkim.conf</code>) i jednoj datoteci s podacima (<code>korisnici.txt</code>). Skripta <code>mail.sh</code> ih postavlja u <code>/etc/ruo5/mail</code>, od podataka pravi popis sandučića za Postfix i hashirane lozinke za Dovecot, pravi TLS certifikat i DKIM ključ, objavljuje javni ključ u DNS-u i pokreće servise u namespace-u <code>ruo5-mail</code>. Instance su potpuno odvojene od eventualnog Postfixa ili Dovecota na računaru: vlastita konfiguracija, red čekanja, sandučići i <code>base_dir</code>.</div>
+<div class="code long"><div class="hd"><span>postfix</span><span>Isječak 6 · s5/p3/postfix/main.cf (izvod)</span></div><pre>myhostname = mail.ruo.lab
+mydomain = ruo.lab
+
+# primanje pošte za @ruo.lab: postojeći sandučići, predaja Dovecotu preko LMTP-a
+virtual_mailbox_domains = ruo.lab
+virtual_mailbox_maps = texthash:/etc/ruo5/mail/postfix/sanducici
+virtual_transport = lmtp:unix:private/dovecot-lmtp
+
+# TLS (certifikat laba; u produkciji ACME, npr. Let's Encrypt)
+smtpd_tls_cert_file = /etc/ruo5/mail/tls/mail.crt
+smtpd_tls_key_file = /etc/ruo5/mail/tls/mail.key
+smtpd_tls_security_level = may
+
+# prijava korisnika (SASL) ide preko Dovecota: jedna baza korisnika za slanje i čitanje
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/auth
+
+# NIJE otvoreni relej: tuđe domene samo za prijavljene korisnike
+smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination
+
+# DKIM: OpenDKIM kao milter potpisuje odlaznu i provjerava dolaznu poštu
+smtpd_milters = inet:127.0.0.1:8891</pre></div>
+<div class="code"><div class="hd"><span>postfix</span><span>Isječak 7 · s5/p3/postfix/master.cf: submission (587)</span></div><pre>submission inet  n       -       n       -       -       smtpd
+  -o smtpd_tls_security_level=encrypt       # bez STARTTLS nema dalje
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_tls_auth_only=yes                # lozinka se nudi tek nakon TLS-a
+  -o smtpd_client_restrictions=permit_sasl_authenticated,reject
+  -o milter_macro_daemon_name=ORIGINATING   # OpenDKIM: ovo je odlazna pošta, potpiši je</pre></div>
+<div class="note warn"><span class="lbl">Otvoreni relej</span>Najvažniji red konfiguracije je <code>reject_unauth_destination</code>: server prima poštu samo za svoje domene, a tuđe domene prosljeđuje samo prijavljenim korisnicima. Server bez tog pravila je <em>otvoreni relej</em>: za nekoliko sati ga pronađu spameri, a njegova adresa završi na crnim listama, nakon čega ni legitimna pošta ne prolazi. Test u ovom primjeru zato prvo provjerava upravo to.</div>
+<p>DKIM ključ se pravi jednom (<code>opendkim-genkey</code>). Privatni dio ostaje na serveru (čita ga samo korisnik <code>opendkim</code>), a javni se objavljuje u zoni <code>_domainkey.ruo.lab</code> dinamičkim UPDATE-om s ključem <code>ruo-dkim</code>, koji smije mijenjati samo TXT zapise te zone:</p>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 8 · s5/p3/mail.sh: objava DKIM ključa (izvod)</span></div><pre>opendkim-genkey -b 2048 -d ruo.lab -s ruo2026 -D /var/lib/ruo5/dkim
+nsupdate -k /var/lib/ruo5/kljucevi/ruo-dkim.key &lt;&lt;EOF
+server 10.50.0.53
+zone _domainkey.ruo.lab
+update delete ruo2026._domainkey.ruo.lab. TXT
+update add ruo2026._domainkey.ruo.lab. 300 TXT "v=DKIM1; h=sha256; k=rsa; " "p=MIIBIjAN..."
+send
+EOF</pre></div>
+<p>Selektor (<code>ruo2026</code>) omogućava više ključeva istovremeno: pri zamjeni ključa novi selektor se objavi, server počne potpisivati novim, a stari zapis se ukloni tek kad sve poruke potpisane njime budu isporučene. TXT zapis duži od 255 znakova dijeli se u više navodnicima odvojenih dijelova, koje primalac spaja.</p>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 9 · pokretanje</span></div><pre>make s5-p3           # postconf -n/-M, doveconf -n, opendkim -n (bez root-a, ništa se ne pokreće)
+make s5-p3-up        # opcionalno: TLS, DKIM, servisi i test (podiže lab i DNS ako ne rade; traži sudo)
+make s5-p3-clean     # gasi servise i briše sandučiće, ključ i certifikat</pre></div>
+<p>Test (<code>mail.sh test</code>) radi iz <code>ruo5-van</code>, kao korisnik koji nije na mreži servera. Prvo provjerava ono što ne smije raditi:</p>
+<div class="out"><div class="hd">izlaz make s5-p3-up: koraci 2 i 3 (TLS i negativni slučajevi)</div><pre>== 2. TLS: certifikat odgovara imenu i potpisan je CA-om laba (STARTTLS na 587)
+  New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
+  Verify return code: 0 (ok)
+  ok: certifikat je ispravan za mail.ruo.lab
+
+== 3. Negativni slučajevi: otvoreni relej i lozinka bez TLS-a
+$ swaks --server mail.ruo.lab:25 --from neko@example.org --to zrtva@example.com   (iz ruo5-van, bez prijave)
+  &lt;** 554 5.7.1 &lt;zrtva@example.com&gt;: Relay access denied
+  ok: server odbija prosljeđivanje tuđe pošte (nije otvoreni relej)
+$ swaks --server mail.ruo.lab:587 --auth ... (bez STARTTLS)
+  *** Host did not advertise authentication
+  ok: prijava bez TLS-a nije moguća</pre></div>
+<p>Zatim šalje poruku kao <code>ana@ruo.lab</code>, čita je IMAP-om kao <code>ben@ruo.lab</code> i provjerava potpis. U SMTP razgovoru <code>&lt;-</code> označava nešifrovani dio, a <code>&lt;~</code> dio nakon STARTTLS-a: lozinka (<code>235 Authentication successful</code>) je prošla tek kroz šifrovani kanal.</p>
+<div class="out"><div class="hd">izlaz: koraci 4 do 7 (slanje, čitanje, DKIM, SPF, DMARC)</div><pre>== 4. Slanje: ana@ruo.lab -&gt; ben@ruo.lab preko submission (587, STARTTLS, prijava)
+  &lt;-  220 mail.ruo.lab ESMTP
+  &lt;-  220 2.0.0 Ready to start TLS
+  &lt;~  235 2.7.0 Authentication successful
+  &lt;~  250 2.0.0 Ok: queued as 9B68CF611F
+
+== 5. Čitanje: IMAP (143, STARTTLS) kao ben@ruo.lab, zaglavlja zadnje poruke
+  INBOX: 1 poruka, TLS: TLSv1.3
+  DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/simple; d=ruo.lab; s=ruo2026;
+  From: ana@ruo.lab
+  Subject: Pozdrav iz sedmice 5
+  Received: from laptop (unknown [10.50.0.66])
+  	(using TLSv1.3 with cipher TLS_AES_256_GCM_SHA384 (256/256 bits)
+
+== 6. DKIM: primalac provjerava potpis javnim ključem iz DNS-a
+$ dkimverify &lt; poruka.eml
+signature ok
+$ dkimverify &lt; izmijenjena.eml   (promijenjen Subject)
+signature verification failed
+
+== 7. SPF i DMARC: smije li IP slati u ime ruo.lab, i da li se domene poklapaju s From
+  SPF 10.50.0.25  mail.ruo.lab (MX)  -&gt; pass
+  SPF 10.50.0.66  tuđi server        -&gt; fail
+  DMARC: From domena=ruo.lab, DKIM d=ruo.lab (poravnato: True), DKIM=pass -&gt; pass</pre></div>
+<p><code>dkimverify</code> radi u <code>ruo5-van</code>, gdje nema privatnog ključa: javni ključ dohvata iz DNS-a (<code>ruo2026._domainkey.ruo.lab</code>), tačno kao pravi primalac. Izmjena jednog zaglavlja ruši potpis, jer potpis pokriva zaglavlja navedena u <code>h=</code> i hash tijela poruke. SPF provjera za <code>10.50.0.66</code> daje <code>fail</code> jer ta adresa nije MX domene. Na kraju test u dnevniku Postfixa pokazuje put poruke: prijava (<code>sasl_username=ana@ruo.lab</code>), <code>cleanup</code> (milter dodaje potpis) i isporuka preko LMTP-a (<code>status=sent</code>), te završava sa <code>Sve provjere su prošle.</code></p>
+<div class="note warn"><span class="lbl">Granice laba</span>Pravi mail server na internetu traži još: PTR zapis za javnu adresu (postavlja ga vlasnik IP adrese, tj. pružatelj), otvoren izlazni port 25 (većina oblaka ga zadano blokira zbog spama), DNSSEC i MTA-STS za zaštitu veze između servera, filtriranje spama i nadzor reputacije adrese. Zato organizacije poštu sve češće drže kod pružatelja (Microsoft 365, Google Workspace), a sami upravljaju samo DNS zapisima (MX, SPF, DKIM, DMARC), što je opet kod iz primjera 1 i 2.</div>
+</section>
+
+<section class="pb">
+<div class="kicker">7 · Primjer 4 · s5/p4</div>
+<h2>SFTP s chroot korisnicima iz podataka: Ansible rola</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>SFTP je protokol za prijenos datoteka unutar SSH veze: šifrovan je, koristi SSH ključeve i ne treba posebne portove, za razliku od starog FTP-a (nešifrovane lozinke, odvojena podatkovna veza) i FTPS-a. Za korisnike koji samo razmjenjuju datoteke (partneri, skripte za backup) važno je ograničiti ih: <code>ForceCommand internal-sftp</code> ne dozvoljava shell, a <code>ChrootDirectory</code> korijen sesije pretvara u jedan direktorij, pa korisnik ne vidi ostatak diska. Chroot ima strogo pravilo: direktorij i svi roditelji moraju pripadati <code>root</code>-u i niko drugi ne smije pisati u njih, inače sshd odbija prijavu. Zato korisnik dobija poddirektorij <code>upload</code> u koji jedino smije pisati.</div>
+<p>Rola koristi isti obrazac kao vatrozid iz sedmice 4: politika je u podacima, a šabloni od nje prave konfiguraciju. Novi korisnik je jedan red u <code>vars.yml</code>:</p>
+<div class="code"><div class="hd"><span>yaml</span><span>Isječak 10 · s5/p4/group_vars/sftp/vars.yml</span></div><pre>sftp_korisnici:
+  - ime: ruo-ana
+    kljuc: "{{ lookup('file', playbook_dir + '/kljucevi/ruo-ana.pub') }}"
+  - ime: ruo-ben
+    kljuc: "{{ lookup('file', playbook_dir + '/kljucevi/ruo-ben.pub') }}"
+
+# vatrozid: SSH/SFTP smije samo admin mreža (računar 10.50.0.1), ostali se odbacuju
+sftp_dozvoljeni: [10.50.0.1/32]
+
+# U labu server radi u namespace-u ruo5-sftp (s5/lab.sh); na pravom serveru sftp_ns je prazan.
+sftp_ns: ruo5-sftp
+sftp_adresa: 10.50.0.22</pre></div>
+<div class="code long"><div class="hd"><span>jinja2</span><span>Isječak 11 · s5/p4/roles/sftp/templates/sshd_config.j2 (izvod)</span></div><pre>ListenAddress {{ sftp_adresa }}
+HostKey {{ sftp_etc }}/ssh_host_ed25519_key
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthorizedKeysFile {{ sftp_etc }}/kljucevi/%u
+AllowGroups {{ sftp_grupa }}
+
+# internal-sftp: SFTP poslužuje sam sshd, pa u chroot direktoriju ne trebaju programi ni biblioteke
+Subsystem sftp internal-sftp
+
+Match Group {{ sftp_grupa }}
+  ChrootDirectory {{ sftp_root }}/%u
+  ForceCommand internal-sftp -l INFO
+  PermitTTY no
+  AllowTcpForwarding no
+  X11Forwarding no</pre></div>
+<div class="code long"><div class="hd"><span>yaml</span><span>Isječak 12 · s5/p4/roles/sftp/tasks/main.yml (izvod)</span></div><pre>- name: korisnici bez shella i bez lozinke (samo ključ)
+  ansible.builtin.user:
+    name: "{{ item.ime }}"
+    group: "{{ sftp_grupa }}"
+    shell: /usr/sbin/nologin
+    home: /upload
+    password: "*"                       # "*" = nema lozinke, ali račun nije zaključan ("!")
+  loop: "{{ sftp_korisnici }}"
+
+- name: chroot korijen po korisniku (root:root 0755)
+  ansible.builtin.file: { path: "{{ sftp_root }}/{{ item.ime }}", state: directory, owner: root, group: root, mode: "0755" }
+  loop: "{{ sftp_korisnici }}"
+
+- name: sshd_config iz šablona (sshd -t provjerava PRIJE zamjene)
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: "{{ sftp_etc }}/sshd_config"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: restartuj sshd
+
+- name: vatrozid iz šablona (nft -c provjerava PRIJE zamjene)
+  ansible.builtin.template:
+    src: sftp.nft.j2
+    dest: "{{ sftp_etc }}/sftp.nft"
+    validate: nft -c -f %s
+  notify: učitaj vatrozid</pre></div>
+<p>Javni ključevi korisnika su u direktoriju koji pripada <code>root</code>-u (<code>AuthorizedKeysFile</code>), a ne u <code>~/.ssh</code>: korisnik ih ne može sam dopisati, pa je spisak dozvoljenih ključeva uvijek onaj iz koda. Ključ servera se pravi jednom; test od njega pravi <code>known_hosts</code>, pa klijent provjerava da razgovara s pravim serverom bez pitanja "yes/no". Vatrozid je isti obrazac kao u sedmici 4, samo na lancu <code>input</code> servera: <code>ip saddr { 10.50.0.1/32 } tcp dport 22 accept</code>, a sve ostalo na port 22 pada.</p>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 13 · pokretanje</span></div><pre>make s5-p4           # ključevi korisnika, syntax-check i --check --diff (bez izmjena)
+make s5-p4-apply     # opcionalno: rola dva puta (idempotentnost), pa test (podiže lab; traži sudo)
+make s5-p4-clean     # gasi sshd laba, briše korisnike i direktorije</pre></div>
+<div class="out"><div class="hd">izlaz 1. izvršavanja (PLAY RECAP)</div><pre>localhost : ok=14 changed=11 unreachable=0 failed=0 skipped=1 rescued=0 ignored=0</pre></div>
+<div class="out"><div class="hd">izlaz 2. izvršavanja: changed=0 = idempotentnost</div><pre>localhost : ok=12 changed=0 unreachable=0 failed=0 skipped=1 rescued=0 ignored=0</pre></div>
+<div class="note"><span class="lbl">Idempotentnost i servisi</span>Posljednja dva zadatka role provjeravaju da vatrozid i sshd stvarno rade, a <code>changed</code> javljaju samo ako su ih morali pokrenuti. Kad se lab ponovo podigne (namespace-ovi su novi, pa nema ni pravila ni procesa), prvo izvršavanje role javlja <code>changed=2</code> i vraća servis, a drugo ponovo <code>changed=0</code>. Rola tako opisuje željeno stanje, a ne samo korake instalacije.</div>
+<div class="out"><div class="hd">izlaz testa (s5/p4/test.sh, skraćeno)</div><pre>== 2. ruo-ana: sesija počinje u /upload; korijen (/) je chroot, a ne korijen servera
+  sftp&gt; pwd
+  Remote working directory: /upload
+  sftp&gt; put izvjestaj.txt
+  sftp&gt; cd /
+  sftp&gt; ls -la
+  drwxr-xr-x    ? 0        0            4096 Nov  6 16:45 .
+  drwxr-xr-x    ? 0        0            4096 Nov  6 16:45 ..
+  drwxr-x---    ? 30033    995          4096 Nov  6 16:46 upload
+  ok: datoteka je na serveru u /srv/ruo5-sftp/ruo-ana/upload
+  ok: u korijenu sesije postoji samo upload
+
+== 3. ruo-ana: izvan chroota se ne vidi ništa, a u korijen chroota se ne može pisati
+  File "/etc/passwd" not found.
+  dest open "/izvjestaj.txt": Permission denied
+
+== 5. Shell i lozinke nisu dozvoljeni
+  $ ssh ruo-ana@10.50.0.22 id  -&gt;  This service allows sftp connections only.
+  $ ssh -o PreferredAuthentications=password ...  -&gt;  ruo-ana@10.50.0.22: Permission denied (publickey).
+
+== 6. Vatrozid: iz ruo5-van (10.50.0.66) SSH port nije dostupan
+  ruo5-van -&gt; 10.50.0.22:22  blokiran
+		ip saddr 10.50.0.1 tcp dport 22 counter packets 5 bytes 300 accept
+		tcp dport 22 counter packets 3 bytes 180 drop comment "ssh iz nedozvoljene mreže"
+
+Sve provjere su prošle.</pre></div>
+<p>Za korisnika <code>/etc/passwd</code> "ne postoji": u njegovom korijenu je samo <code>upload</code>. Brojači pravila vatrozida pokazuju koliko je paketa pogodilo koje pravilo, pa se odmah vidi i dozvoljeni promet s računara i odbijeni pokušaji iz <code>ruo5-van</code>.</p>
+</section>
+
+<section class="pb">
+<div class="kicker">Sažetak i provjera znanja</div>
+<h2>Pregled naredbi, pitanja i zadaci</h2>
+<table class="t">
+<tr><th>Cilj</th><th>Šta radi</th><th>Mijenja sistem?</th></tr>
+<tr><td><code>make s5-p1</code> / <code>s5-p1-up</code></td><td>provjera konfiguracije i zona / lab, primarni i sekundarni DNS, dig upiti</td><td>ne / da (namespace-ovi, sudo)</td></tr>
+<tr><td><code>make s5-p1-serial</code></td><td>izmjena zone bez i sa povećanjem seriala</td><td>da (radna kopija zone u labu)</td></tr>
+<tr><td><code>make s5-p2</code> / <code>s5-p2-apply</code></td><td>Terraform: plan bez servera / apply, idempotentnost, drift i ispravak</td><td>ne / da (zapisi u <code>oblak.ruo.lab</code>)</td></tr>
+<tr><td><code>make s5-p3</code> / <code>s5-p3-up</code></td><td>provjera konfiguracije pošte / servisi i test (relej, TLS, DKIM, SPF, DMARC)</td><td>ne / da (servisi u <code>ruo5-mail</code>)</td></tr>
+<tr><td><code>make s5-p4</code> / <code>s5-p4-apply</code></td><td>SFTP rola: <code>--check</code> / dva izvršavanja + test</td><td>ne / da (2 lab korisnika, sshd u <code>ruo5-sftp</code>)</td></tr>
+<tr><td><code>make s5-clean</code></td><td>briše sve iz sedmice 5 (servisi, korisnici, state, lab)</td><td>uklanja</td></tr>
+</table>
+<table class="t">
+<tr><th>Pitanje</th><th>Odgovor</th></tr>
+<tr><td>Koja je razlika između autoritativnog i rekurzivnog DNS servera?</td><td>Autoritativni je izvor podataka za svoje zone; rekurzivni za klijenta prolazi lanac delegacija od korijena i pamti odgovore koliko kaže TTL.</td></tr>
+<tr><td>Zašto sekundarni nije preuzeo izmjenu zone?</td><td>Serial u SOA zapisu nije povećan; sekundarni preuzima zonu samo kad je serial veći od njegovog.</td></tr>
+<tr><td>Šta je glue zapis i kada je potreban?</td><td>A zapis za ime NS servera unutar zone koju taj server poslužuje; bez njega resolver ne bi mogao doći do servera.</td></tr>
+<tr><td>Zašto server za <code>example.com</code> vraća REFUSED?</td><td>Server je samo autoritativni (<code>recursion no</code>) i ne odgovara za tuđe zone; otvoreni rekurzivni server se zloupotrebljava za DDoS.</td></tr>
+<tr><td>Čemu služi TSIG ključ u primjeru 2?</td><td>Potpisuje DNS UPDATE, pa server prihvata izmjene samo od vlasnika ključa, i to samo u zoni koju mu dozvoljava <code>update-policy</code>.</td></tr>
+<tr><td>Šta je otvoreni relej i koje pravilo ga sprječava?</td><td>Server koji prosljeđuje poštu bilo koga bilo kome; <code>reject_unauth_destination</code> dozvoljava tuđe domene samo prijavljenim korisnicima.</td></tr>
+<tr><td>Šta provjerava SPF, a šta DKIM?</td><td>SPF: smije li IP adresa slati za domenu iz envelope pošiljaoca. DKIM: potpis domene nad zaglavljima i tijelom, pa i neizmijenjenost poruke.</td></tr>
+<tr><td>Zašto treba DMARC ako postoje SPF i DKIM?</td><td>Tek DMARC traži da domena iz SPF-a ili DKIM-a odgovara domeni iz <code>From:</code> koju korisnik vidi, i kaže primaocu šta da uradi ako ne odgovara.</td></tr>
+<tr><td>Zašto chroot direktorij mora pripadati root-u?</td><td>Inače bi korisnik u korijen mogao postaviti datoteke (npr. lažni <code>/etc</code>) i zloupotrijebiti programe koji se izvršavaju s višim pravima; sshd takvu konfiguraciju odbija.</td></tr>
+<tr><td>Zašto su javni ključevi korisnika u direktoriju koji pripada root-u?</td><td>Korisnik ne može sam dodati ključ; spisak dozvoljenih ključeva je uvijek onaj iz koda.</td></tr>
+</table>
+<h3>Zadaci za samostalni rad</h3>
+<ol>
+<li>U zonu <code>ruo.lab</code> dodati zapis <code>git A 10.50.0.30</code> i odgovarajući PTR u reverznu zonu, povećati seriale, provjeriti obje zone (<code>make s5-p1</code>) i pokazati da odgovaraju oba servera.</li>
+<li>Namjerno napraviti grešku u zoni (CNAME na <code>@</code> ili ime bez tačke na kraju) i predati izlaz <code>named-checkzone</code>. Objasniti poruku.</li>
+<li>U <code>s5/p2/main.tf</code> dodati servis <code>cache = ["10.40.4.10"]</code> i <code>SRV</code> zapis za njega (<code>dns_srv_record_set</code>), primijeniti dva puta i predati izlaz drugog izvršavanja.</li>
+<li>Promijeniti SPF zapis u <code>"v=spf1 -all"</code> i pokrenuti <code>mail.sh test</code>. Objasniti zašto SPF sada pada i za server <code>mail.ruo.lab</code>, a DMARC i dalje prolazi.</li>
+<li>Napraviti drugi DKIM selektor (<code>ruo2027</code>), objaviti ga, prebaciti OpenDKIM na njega i opisati redoslijed zamjene ključa bez gubitka pošte.</li>
+<li>U <code>vars.yml</code> dodati SFTP korisnika <code>ruo-cedo</code> i dozvoliti SSH iz <code>10.50.0.66/32</code>. Pokrenuti rolu dva puta i u <code>test.sh</code> dodati provjeru da je <code>ruo5-van</code> sada dozvoljen.</li>
+</ol>
+<div class="note "><span class="lbl">Projektni zadatak</span>Projekat traži DNS, mail i SFTP definisane kodom. Dobar početak je ova sedmica: zona domene projekta u Gitu, zapisi servisa iz Terraforma, mail server s potpunim SPF/DKIM/DMARC zapisima i SFTP korisnici iz Ansible podataka, uz test koji pokazuje šta radi, a šta je namjerno zabranjeno.</div>
+<div class="note "><span class="lbl">Sljedeća sedmica</span>Servisi imaju imena i komuniciraju. Sedmica 6 uvodi podatke: block, file i object storage (NFS, MinIO/S3), baze podataka (PostgreSQL/MySQL) s korisnicima, privilegijama i replikacijom, te backup politike, RPO/RTO i test restore-a.</div>
+</section>
+
+<footer>Računarstvo u oblaku · II ciklus, III semestar · akademska 2026/27 · Sedmica 5: DNS, e-pošta i SFTP kao kod</footer>
+</body></html>

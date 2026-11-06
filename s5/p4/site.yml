@@ -1,0 +1,5 @@
+- name: SFTP server s chroot korisnicima i vatrozidom, iz podataka
+  hosts: sftp
+  become: true
+  roles:
+    - sftp

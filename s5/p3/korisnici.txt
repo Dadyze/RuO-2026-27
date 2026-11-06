@@ -1,0 +1,5 @@
+# s5/p3: sandučići laba (adresa lozinka). Lozinke služe SAMO za laboratorij: mail.sh ih pretvara u
+# SHA512-CRYPT hash za Dovecot, a u vlastitom projektu idu u Ansible Vault (sedmica 3).
+ana@ruo.lab   lozinka-ana-lab
+ben@ruo.lab   lozinka-ben-lab
+dmarc@ruo.lab lozinka-dmarc-lab

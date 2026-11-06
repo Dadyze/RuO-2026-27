@@ -1,0 +1,14 @@
+# SFTP kao PODACI: korisnik se dodaje jednim redom ovdje, a rola pravi račun, chroot direktorij,
+# ključ i pravila. Ključeve pravi "make s5-p4" u s5/p4/kljucevi/ (nisu u Gitu).
+sftp_korisnici:
+  - ime: ruo-ana
+    kljuc: "{{ lookup('file', playbook_dir + '/kljucevi/ruo-ana.pub') }}"
+  - ime: ruo-ben
+    kljuc: "{{ lookup('file', playbook_dir + '/kljucevi/ruo-ben.pub') }}"
+
+# vatrozid: SSH/SFTP smije samo admin mreža (računar 10.50.0.1), ostali se odbacuju
+sftp_dozvoljeni: [10.50.0.1/32]
+
+# U labu server radi u namespace-u ruo5-sftp (s5/lab.sh); na pravom serveru sftp_ns je prazan.
+sftp_ns: ruo5-sftp
+sftp_adresa: 10.50.0.22

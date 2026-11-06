@@ -21,3 +21,7 @@ __pycache__/
 *.retry
 _build*.html
 _profile/
+
+# sedmica 5: generisani ključevi i stanje
+s5/p4/kljucevi/
+s5/p2/.terraform.lock.hcl

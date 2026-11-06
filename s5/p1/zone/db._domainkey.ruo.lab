@@ -1,0 +1,5 @@
+; s5/p1: početno stanje dinamičke zone _domainkey.ruo.lab. Javni DKIM ključ objavljuje s5/p3 (nsupdate + TSIG).
+$TTL 300
+@   IN SOA  ns1.ruo.lab. hostmaster.ruo.lab. ( 1 3600 600 1209600 300 )
+@   IN NS   ns1.ruo.lab.
+@   IN NS   ns2.ruo.lab.

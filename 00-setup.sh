@@ -19,7 +19,7 @@ c_ok=$'\033[32m'; c_warn=$'\033[33m'; c_step=$'\033[1;36m'; c_off=$'\033[0m'
 step() { printf '\n%s== %s%s\n' "$c_step" "$*" "$c_off"; }
 ok()   { printf '  %sok%s    %s\n' "$c_ok" "$c_off" "$*"; }
 warn() { printf '  %s!!%s    %s\n' "$c_warn" "$c_off" "$*"; }
-have() { command -v "$1" >/dev/null 2>&1; }
+have() { command -v "$1" >/dev/null 2>&1 || [ -x "/usr/sbin/$1" ]; }
 
 [ "$(id -u)" -ne 0 ] || { echo "Ne pokretati kao root; skripta sama koristi sudo."; exit 1; }
 [ "$(uname -s)" = "Linux" ] || { echo "Potreban je Linux ili WSL2."; exit 1; }
@@ -30,7 +30,7 @@ IN_WSL=0; grep -qi microsoft /proc/version 2>/dev/null && IN_WSL=1
 HAS_SYSTEMD=0; [ "$(ps -p 1 -o comm= 2>/dev/null || true)" = "systemd" ] && HAS_SYSTEMD=1
 NEED_RELOGIN=0
 
-step "1/8 Provjera okruženja"
+step "1/9 Provjera okruženja"
 ok "$(. /etc/os-release && echo "$PRETTY_NAME")"
 if [ "$IN_WSL" = 1 ]; then
   ok "WSL2 detektovan"
@@ -43,7 +43,7 @@ if [ "$IN_WSL" = 1 ]; then
   fi
 fi
 
-step "2/8 Osnovni paketi (git, make, curl, ansible)"
+step "2/9 Osnovni paketi (git, make, curl, ansible)"
 sudo apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   git make curl wget gnupg lsb-release ca-certificates software-properties-common \
@@ -51,7 +51,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   iproute2 iputils-ping nftables
 ok "git, make, curl, ansible, iproute2, iputils-ping, nftables"
 
-step "3/8 HashiCorp repozitorij: Terraform i Packer"
+step "3/9 HashiCorp repozitorij: Terraform i Packer"
 KEYRING=/usr/share/keyrings/hashicorp-archive-keyring.gpg
 if [ ! -f "$KEYRING" ]; then
   wget -qO- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor --yes -o "$KEYRING"
@@ -62,7 +62,7 @@ sudo apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y terraform packer
 ok "terraform i packer"
 
-step "4/8 KVM i libvirt"
+step "4/9 KVM i libvirt"
 if [ "$SKIP_LIBVIRT" = 1 ]; then
   warn "preskočeno (SKIP_LIBVIRT=1)"
 else
@@ -92,7 +92,7 @@ else
   if [ -e /dev/kvm ]; then ok "/dev/kvm postoji"; else warn "nema /dev/kvm: VM primjeri ostaju na nivou plan/validate"; fi
 fi
 
-step "5/8 Docker"
+step "5/9 Docker"
 if have docker && docker version >/dev/null 2>&1; then
   ok "docker radi: $(docker --version)"
 elif [ "$INSTALL_DOCKER" = 1 ]; then
@@ -109,7 +109,7 @@ else
   warn "ili pokrenuti: INSTALL_DOCKER=1 ./00-setup.sh"
 fi
 
-step "6/8 kubectl i kind"
+step "6/9 kubectl i kind"
 if [ "$SKIP_K8S" = 1 ]; then
   warn "preskočeno (SKIP_K8S=1)"
 else
@@ -125,7 +125,7 @@ else
   ok "kubectl i kind"
 fi
 
-step "7/8 SSH ključ za virtualne mašine"
+step "7/9 SSH ključ za virtualne mašine"
 if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
   ok "~/.ssh/id_ed25519 već postoji"
 else
@@ -134,8 +134,22 @@ else
   ok "napravljen ~/.ssh/id_ed25519"
 fi
 
-step "8/8 Provjera"
-for t in git make terraform packer ansible docker kubectl kind virsh nft ip; do
+step "8/9 DNS, e-pošta i SFTP (sedmica 5)"
+# Postfix bez pitanja; servisi se instaliraju zbog programa, a pokreću se samo u labu (namespace-ovi),
+# pa se sistemske instance gase i ne pokreću s računarom. SSH server se gasi samo ako ga skripta tek instalira.
+echo "postfix postfix/main_mailer_type select No configuration" | sudo debconf-set-selections
+SSH_BIO=0; dpkg -s openssh-server >/dev/null 2>&1 && SSH_BIO=1
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  bind9 bind9-utils bind9-dnsutils postfix dovecot-imapd dovecot-lmtpd opendkim opendkim-tools \
+  python3-dkim python3-spf swaks openssh-server openssh-client
+if [ "$HAS_SYSTEMD" = 1 ]; then
+  for s in named postfix dovecot opendkim; do sudo systemctl disable --now "$s" >/dev/null 2>&1 || true; done
+  [ "$SSH_BIO" = 1 ] || sudo systemctl disable --now ssh.socket ssh >/dev/null 2>&1 || true
+fi
+ok "bind9, postfix, dovecot, opendkim, swaks, openssh-server (sistemski servisi isključeni)"
+
+step "9/9 Provjera"
+for t in git make terraform packer ansible docker kubectl kind virsh nft ip named dig postfix dovecot opendkim swaks sshd; do
   if have "$t"; then ok "$t"; else warn "$t nije instaliran"; fi
 done
 # sed -n 1p cita cijeli ulaz (head -1 bi uz pipefail prekinuo skriptu zbog SIGPIPE)

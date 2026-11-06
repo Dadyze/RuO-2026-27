@@ -1,0 +1,7 @@
+- name: restartuj sshd
+  ansible.builtin.shell: |
+    pkill -F /run/ruo5-sftp-sshd.pid -x sshd 2>/dev/null && sleep 1
+    {{ sftp_u_ns }} /usr/sbin/sshd -f {{ sftp_etc }}/sshd_config -E {{ sftp_log }}
+
+- name: učitaj vatrozid
+  ansible.builtin.command: "{{ sftp_u_ns }} nft -f {{ sftp_etc }}/sftp.nft"

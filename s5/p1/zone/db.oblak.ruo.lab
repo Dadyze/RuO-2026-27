@@ -1,0 +1,6 @@
+; s5/p1: početno stanje dinamičke zone oblak.ruo.lab. Zapise dodaje Terraform (s5/p2) kroz RFC 2136.
+; Nakon prve dinamičke izmjene BIND vodi dnevnik (.jnl), pa se ova datoteka više ne uređuje ručno.
+$TTL 300
+@   IN SOA  ns1.ruo.lab. hostmaster.ruo.lab. ( 1 3600 600 1209600 300 )
+@   IN NS   ns1.ruo.lab.
+@   IN NS   ns2.ruo.lab.

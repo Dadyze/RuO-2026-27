@@ -1,0 +1,40 @@
+; s5/p1: zona ruo.lab kao kod. Svaka izmjena = novi commit + VEĆI serial (inače je sekundarni ne preuzima).
+; Serial po konvenciji GGGGMMDDnn: datum izmjene + redni broj izmjene tog dana.
+$TTL 300
+$ORIGIN ruo.lab.
+@         IN SOA  ns1.ruo.lab. hostmaster.ruo.lab. (
+                  2026111301 ; serial
+                  3600       ; refresh: koliko često sekundarni provjerava serial
+                  600        ; retry: ponovni pokušaj ako primarni ne odgovara
+                  1209600    ; expire: sekundarni prestaje odgovarati ako 14 dana nema primarnog
+                  300 )      ; negativni TTL: koliko se pamti odgovor "ne postoji" (NXDOMAIN)
+
+; autoritativni serveri zone (+ "glue" A zapisi ispod)
+@         IN NS     ns1
+@         IN NS     ns2
+ns1       IN A      10.50.0.53
+ns2       IN A      10.50.0.54
+
+; serveri
+admin     IN A      10.50.0.1
+mail      IN A      10.50.0.25
+sftp      IN A      10.50.0.22
+imap      IN CNAME  mail
+smtp      IN CNAME  mail
+
+; e-pošta: kome se predaje pošta za @ruo.lab i ko je smije slati
+@         IN MX     10 mail
+@         IN TXT    "v=spf1 mx -all"
+_dmarc    IN TXT    "v=DMARC1; p=reject; adkim=s; aspf=s; rua=mailto:dmarc@ruo.lab"
+; automatsko podešavanje klijenata (RFC 6186): gdje su submission i IMAP
+_submission._tcp IN SRV 0 1 587 mail
+_imap._tcp       IN SRV 0 1 143 mail
+
+; TLS: samo navedeni CA smije izdati certifikat za ovu domenu (RFC 8659)
+@         IN CAA    0 issue "letsencrypt.org"
+
+; delegacije dinamičkim zonama na istim serverima (zapise u njima mijenjaju alati, ne ova datoteka)
+oblak       IN NS   ns1
+oblak       IN NS   ns2
+_domainkey  IN NS   ns1
+_domainkey  IN NS   ns2

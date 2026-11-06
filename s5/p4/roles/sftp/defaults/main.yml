@@ -1,0 +1,11 @@
+sftp_korisnici: []
+sftp_dozvoljeni: []
+sftp_grupa: ruo5-sftp
+sftp_root: /srv/ruo5-sftp                 # chroot direktoriji: /srv/ruo5-sftp/<korisnik>
+sftp_etc: /etc/ruo5/sftp                  # sshd_config, ključ servera, javni ključevi korisnika, pravila
+sftp_log: /var/lib/ruo5/sftp-sshd.log
+sftp_ns: ""
+sftp_adresa: 0.0.0.0
+sftp_instaliraj_paket: true
+# naredba ispred sshd/nft: u labu "ip netns exec <ns>", na pravom serveru ništa
+sftp_u_ns: "{{ ('ip netns exec ' + sftp_ns) if sftp_ns else '' }}"
