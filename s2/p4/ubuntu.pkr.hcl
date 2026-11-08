@@ -10,11 +10,11 @@ packer {
 source "qemu" "ubuntu" {
   iso_url          = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
   iso_checksum     = "file:https://cloud-images.ubuntu.com/noble/current/SHA256SUMS"
-  disk_image       = true # ulaz je gotov disk, ne instalacijski ISO
+  disk_image       = true            # ulaz je gotov disk, ne instalacijski ISO
   format           = "qcow2"
   disk_size        = "10G"
   memory           = 1024
-  accelerator      = "kvm" # bez KVM-a: "tcg" (sporo)
+  accelerator      = "kvm"           # bez KVM-a: "tcg" (sporo)
   headless         = true
   cd_files         = ["./seed/user-data", "./seed/meta-data"]
   cd_label         = "cidata"
