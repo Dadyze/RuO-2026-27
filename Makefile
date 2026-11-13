@@ -21,6 +21,7 @@ need_libvirt = virsh -c qemu:///system list >/dev/null 2>&1 || { echo "libvirt n
   s2-p4 s2-p4-build s2-p4-vm s2-p4-clean \
   s3-p1 s3-p1-apply s3-p2-vault s3-p2 s3-p2-apply s3-p3 s3-p3-apply s3-p3-clean \
   s3-p4 s3-p4-config s3-p4-persist s3-p4-clean s3-p4-r s3-p4-r-clean s3-p5 s3-p5-up s3-p5-heal s3-p5-clean \
+  s3-p5-r s3-p5-r-up s3-p5-r-clean \
   s4-p1 s4-p1-lab s4-p1-clean s4-p2 s4-p2-up s4-p2-clean s4-p3 s4-p3-apply \
   s4-p4 s4-p4-apply s4-p4-clean s4-clean \
   s5-lab s5-dns s5-p1 s5-p1-up s5-p1-serial s5-p2 s5-p2-apply s5-p2-clean \
@@ -176,6 +177,24 @@ s3-p5-heal: ## briše jedan Pod: Deployment ga vraća
 > kubectl get pods
 s3-p5-clean: ## briše kind klaster
 > kind delete cluster --name ruo
+s3-p5-r: ## [rješenje] brojač (web + redis) kao Kubernetes manifest: dry-run (s3/p5/brojac.yaml)
+> @$(call need,kubectl)
+> kubectl apply --dry-run=client --validate=false -f s3/p5/brojac.yaml
+s3-p5-r-up: ## [rješenje] kind klaster, gradi sliku, kind load, apply, 3 posjete preko Servisa web
+> @$(call need,kind)
+> @$(call need,kubectl)
+> @$(call need,docker)
+> kind get clusters | grep -qx ruo || kind create cluster --name ruo
+> docker build -t ruo/brojac:1.0 s3/p4/app
+> kind load docker-image ruo/brojac:1.0 --name ruo
+> kubectl apply -f s3/p5/brojac.yaml
+> kubectl -n brojac rollout status deploy/redis --timeout=180s
+> kubectl -n brojac rollout status deploy/web --timeout=180s
+> kubectl -n brojac get pods,svc,pvc -o wide
+> @$(call banner,3 zahtjeva preko Servisa web: brojac raste)
+> kubectl -n brojac port-forward svc/web 8082:80 >/dev/null & PF=$$!; sleep 3; for i in 1 2 3; do curl -s localhost:8082; done; kill $$PF
+s3-p5-r-clean: ## [rješenje] briše namespace brojac (klaster briše s3-p5-clean)
+> -kubectl delete namespace brojac --ignore-not-found
 
 ##@ Sedmica 4: mreža i vatrozid kao kod (vježbe su u Linux network namespace-ovima; naredbe -lab/-up/-apply traže sudo)
 s4-p1: ## osnove: pregled mreže računara (ip link/addr/route), samo čita
