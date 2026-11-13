@@ -33,9 +33,9 @@ build {
     inline = [
       "sudo cloud-init status --wait",
       "sudo apt-get update",
-      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nginx qemu-guest-agent",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nginx qemu-guest-agent htop",
       "sudo systemctl enable nginx",
-      "echo 'ruo-base 1.0' | sudo tee /etc/ruo-image-version",
+      "echo 'ruo-base 1.1' | sudo tee /etc/ruo-image-version",
       # čišćenje: build lozinka se zaključava, a cloud-init se resetuje da ponovo radi pri prvom pokretanju
       "sudo passwd -l ubuntu",
       "sudo cloud-init clean --logs --seed",
