@@ -1,0 +1,41 @@
+services:
+  web:
+    build: ./app
+    image: ruo/brojac:1.0
+    environment:
+      REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy      # web čeka dok Redis ne postane zdrav
+    restart: unless-stopped
+    networks: [backend]
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      web:
+        condition: service_healthy      # nginx ceka dok web ne postane zdrav
+    restart: unless-stopped
+    networks: [backend]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data                 # podaci prežive brisanje kontejnera
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks: [backend]                 # port NIJE objavljen: dostupan samo web usluzi
+
+volumes:
+  redisdata:
+
+networks:
+  backend:

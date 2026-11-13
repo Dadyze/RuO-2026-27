@@ -20,7 +20,7 @@ need_libvirt = virsh -c qemu:///system list >/dev/null 2>&1 || { echo "libvirt n
   s2-p1 s2-p1-clean s2-p2 s2-p3 s2-p3-apply s2-p3-clean \
   s2-p4 s2-p4-build s2-p4-vm s2-p4-clean \
   s3-p1 s3-p1-apply s3-p2-vault s3-p2 s3-p2-apply s3-p3 s3-p3-apply s3-p3-clean \
-  s3-p4 s3-p4-config s3-p4-persist s3-p4-clean s3-p5 s3-p5-up s3-p5-heal s3-p5-clean \
+  s3-p4 s3-p4-config s3-p4-persist s3-p4-clean s3-p4-r s3-p4-r-clean s3-p5 s3-p5-up s3-p5-heal s3-p5-clean \
   s4-p1 s4-p1-lab s4-p1-clean s4-p2 s4-p2-up s4-p2-clean s4-p3 s4-p3-apply \
   s4-p4 s4-p4-apply s4-p4-clean s4-clean \
   s5-lab s5-dns s5-p1 s5-p1-up s5-p1-serial s5-p2 s5-p2-apply s5-p2-clean \
@@ -147,6 +147,17 @@ s3-p4-persist: ## down pa up: podaci u volumenu prežive
 > curl -s localhost:8080
 s3-p4-clean: ## down -v (briše i volumen)
 > cd s3/p4 && docker compose down -v
+s3-p4-r: ## [rješenje] samo s3/p4-rjesenje: nginx proxy ispred web-a, build, up, 3 posjete
+> @$(call need,docker)
+> cd s3/p4-rjesenje && docker compose config -q
+> cd s3/p4-rjesenje && docker compose up -d --build --wait
+> cd s3/p4-rjesenje && docker compose ps
+> @$(call banner,3 zahtjeva preko nginxa: brojac raste)
+> for i in 1 2 3; do curl -s localhost:8080; done
+> @$(call banner,odgovara nginx)
+> curl -sI localhost:8080 | grep -i '^server'
+s3-p4-r-clean: ## [rješenje] čisti s3/p4-rjesenje (down -v)
+> cd s3/p4-rjesenje && docker compose down -v
 
 s3-p5: ## Kubernetes: dry-run manifesta (bez klastera)
 > @$(call need,kubectl)
