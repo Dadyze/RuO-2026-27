@@ -11,6 +11,7 @@ prava datoteka, a pokreće se jednom naredbom `make`, pa se na nastavi odmah vid
 | 2 | Uvod u IaC: virtualne mašine kao kod | `s2/p1` Terraform (state, drift), `s2/p2` cloud-init, `s2/p3` Terraform + libvirt VM, `s2/p4` Packer |
 | 3 | Konfiguracija i kontejneri kao kod | `s3/p1` Ansible, `s3/p2` role + Vault, `s3/p3` Terraform + Ansible, `s3/p4` Dockerfile + Compose, `s3/p5` Kubernetes |
 | 4 | Mrežna konfiguracija i firewall kao kod | `s4/p1` osnove mreže (`ip` adrese, sučelja, rute), `s4/p2` mrežni lab (ruter, NAT, segmenti), `s4/p3` nftables, `s4/p4` Ansible rola vatrozida |
+| 6 | Pohrana i baze podataka kao kod | `s6/p1` block storage (loop volumen, mkfs, proširenje), `s6/p2` object storage (Garage, S3 API), `s6/p3` PostgreSQL uloge/privilegije + replika, `s6/p4` backup, retencija, test restore-a, RPO/RTO |
 
 Bilješke (PDF) uz primjere su u mapi [`docs/`](docs/). Svaki primjer ima i objašnjenje pozadine (KVM/QEMU/libvirt, cloud-init, Ansible, Docker, Kubernetes) u bilješkama.
 
@@ -134,6 +135,7 @@ Sve se pokreće u **Linux okruženju**: Ubuntu 24.04 ili **WSL2** na Windowsu (o
 | libvirt / KVM | `s2/p3`, `s2/p4`, `s3/p3` | samo za primjere s virtualnim mašinama |
 | `kubectl`, `kind` | `s3/p5` | samo za pokretanje klastera; dry-run radi i bez njih |
 | `ip`, `ping`, `nft` | `s4/*` | iproute2, iputils-ping, nftables (instalira `00-setup.sh`); `-up` ciljevi traže `sudo` |
+| PostgreSQL, `python3-boto3`, Garage | `s6/*` | instalira `00-setup.sh` (Garage u `/usr/local/bin`); instance rade kao procesi korisnika, bez `sudo` |
 
 Za većinu primjera **nije potreban račun u oblaku i ništa ne košta**. Nijedan primjer ne koristi plaćene usluge.
 
@@ -153,6 +155,7 @@ Sve potrebno postavlja jedna skripta (Ubuntu/Debian ili WSL2 Ubuntu). Pokreće s
 4. instalira KVM/libvirt, dodaje korisnika u grupe `libvirt`/`kvm`, pokreće `libvirtd` i pravi pool i mrežu `default`,
 5. provjerava Docker (sa `INSTALL_DOCKER=1` ga instalira ako ga nema),
 6. instalira `kubectl` i `kind`, te `iproute2` i `nftables` za mrežne primjere (sedmica 4),
+   zatim BIND, Postfix, Dovecot i OpenSSH server (sedmica 5) te PostgreSQL, `python3-boto3` i Garage (sedmica 6),
 7. pravi SSH ključ `~/.ssh/id_ed25519` ako ne postoji (koristi se u VM primjerima),
 8. ispisuje provjeru instaliranih alata.
 
@@ -217,6 +220,11 @@ Izuzeci koji se mogu bezbrijetno izvršiti jer rade lokalno i ne koštaju ništa
 | `make s4-p3` / `s4-p3-apply` | nftables: `nft -c` / učitavanje i matrica povezivosti PRIJE i POSLIJE | ne / da (ruter laba) |
 | `make s4-p4` / `s4-p4-apply` | Ansible rola vatrozida: `--check` / dva izvršavanja + matrica | ne / da |
 | `make s4-clean` | čisti sve iz sedmice 4 | uklanja |
+| `make s6-p1` / `s6-p1-lab` | block storage: pregled (samo čita) / volumen, mkfs, mount, detach/attach, proširenje | ne / da (loop uređaj, sudo) |
+| `make s6-p2` | Garage: layout, bucket, ključ, S3 klijent (put, list, presigned URL) | lokalni proces (127.0.0.1:3900) |
+| `make s6-p3` / `s6-p3-replika` | PostgreSQL: SQL kod 2x (otisak stanja), test privilegija / replika | lokalni procesi (5461, 5462) |
+| `make s6-p4` / `s6-p4-restore` | backupi, retencija, kopija u S3 / kvar, test restore-a, oporavak, RPO i RTO | lokalne datoteke i baza laba |
+| `make s6-clean` | čisti sve iz sedmice 6 | uklanja |
 | `make all` | svi primjeri redom (sekvencijalno, idempotentno) | lokalna datoteka i kontejneri |
 | `make safe-all` | sve što ne mijenja sistem | ne |
 | `make clean-all` | čisti sve primjere | uklanja |
@@ -272,8 +280,8 @@ Provjera spremnosti ne zamjenjuje obradu gresaka u korisnickim zahtjevima.
 
 ## Dokumentacija
 
-Sillabus i bilješke s predavanja su u [`docs/`](docs/) (PDF): [`RuO-Syllabus.pdf`](docs/RuO-Syllabus.pdf), `RuO - Lesson1.pdf` (sedmica 1), `RuO - Lesson2.pdf`, `RuO - Lesson3.pdf` i `RuO - Lesson4.pdf`. Izvor (HTML) je u `docs/src/`, a PDF se generiše naredbom
-`python docs/src/build.py` (potreban Edge, Chrome ili Chromium).
+Sillabus i bilješke s predavanja su u [`docs/`](docs/) (PDF): [`RuO-Syllabus.pdf`](docs/RuO-Syllabus.pdf), `RuO - Lesson1.pdf` (sedmica 1), `RuO - Lesson2.pdf`, `RuO - Lesson3.pdf`, `RuO - Lesson4.pdf`, `RuO - Lesson5.pdf` i `RuO - Lesson6.pdf`. Izvor (HTML) je u `docs/src/`, a PDF se generiše naredbom
+`python docs/src/build.py` (ili samo jedna sedmica: `python docs/src/build.py 6`; potreban Edge, Chrome ili Chromium).
 
 ## Tajne i Git
 

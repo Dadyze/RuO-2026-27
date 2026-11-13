@@ -1,0 +1,20 @@
+# Garage: S3-kompatibilan object storage, jedan čvor (lab). objekti.sh zamjenjuje @...@ vrijednosti
+# i piše gotovu konfiguraciju u s6/.lab/garage/garage.toml; tajne se generišu pri prvom pokretanju.
+metadata_dir = "@DIR@/meta"          # metapodaci: buckets, ključevi, popis objekata (mala baza)
+data_dir     = "@DIR@/data"          # sami objekti, podijeljeni u blokove
+db_engine    = "sqlite"
+
+replication_factor = 1               # lab: jedna kopija. Produkcija: 3 (svaki blok u 3 zone)
+
+rpc_bind_addr   = "127.0.0.1:3901"   # promet između čvorova klastera
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret      = "@RPC_SECRET@"     # zajednička tajna čvorova (32 bajta, hex)
+
+[s3_api]
+s3_region     = "garage"
+api_bind_addr = "127.0.0.1:3900"     # S3 API: ovdje se spajaju klijenti (boto3, aws cli, rclone)
+root_domain   = ".s3.localhost"
+
+[admin]
+api_bind_addr = "127.0.0.1:3903"
+admin_token   = "@ADMIN_TOKEN@"

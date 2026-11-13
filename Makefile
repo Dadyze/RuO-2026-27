@@ -24,7 +24,9 @@ need_libvirt = virsh -c qemu:///system list >/dev/null 2>&1 || { echo "libvirt n
   s4-p1 s4-p1-lab s4-p1-clean s4-p2 s4-p2-up s4-p2-clean s4-p3 s4-p3-apply \
   s4-p4 s4-p4-apply s4-p4-clean s4-clean \
   s5-lab s5-dns s5-p1 s5-p1-up s5-p1-serial s5-p2 s5-p2-apply s5-p2-clean \
-  s5-p3 s5-p3-up s5-p3-clean s5-p4-kljucevi s5-p4 s5-p4-apply s5-p4-clean s5-clean
+  s5-p3 s5-p3-up s5-p3-clean s5-p4-kljucevi s5-p4 s5-p4-apply s5-p4-clean s5-clean \
+  s6-p1 s6-p1-lab s6-p1-clean s6-p2 s6-p2-clean s6-baza s6-p3 s6-p3-replika s6-p3-clean \
+  s6-p4 s6-p4-restore s6-p4-clean s6-clean
 
 ##@ Pomoć
 help: ## ovaj popis
@@ -35,7 +37,7 @@ setup: ## instalira sve alate (00-setup.sh)
 > ./00-setup.sh
 
 check: ## provjera da li su alati instalirani
-> @for t in git make terraform packer ansible docker kubectl kind virsh nft named dig postfix dovecot opendkim swaks sshd; do \
+> @for t in git make terraform packer ansible docker kubectl kind virsh nft named dig postfix dovecot opendkim swaks sshd psql garage losetup; do \
 >   if command -v $$t >/dev/null; then printf '  \033[32mok\033[0m     %s\n' $$t; else printf '  \033[33mnema\033[0m   %s\n' $$t; fi; done
 
 run: ## make run EX=s2-p1 (isto što i make s2-p1)
@@ -276,10 +278,48 @@ s5-clean: s5-p3-clean s5-p4-clean s5-p2-clean ## čisti cijelu sedmicu 5 (servis
 > -sudo bash s5/lab.sh down
 > -sudo rm -rf /etc/ruo5 /var/lib/ruo5
 
+##@ Sedmica 6: pohrana i baze podataka kao kod (Garage i PostgreSQL rade lokalno kao procesi korisnika, bez sudo)
+s6-p1: ## block storage: pregled diskova, datotečnih sistema i montiranja (samo čita)
+> bash s6/p1/disk.sh pregled
+s6-p1-lab: ## [opcionalno] vježba: volumen, mkfs, mount, otkači/prikači, proširenje (sudo; PAUZA=1 čeka Enter)
+> sudo PAUZA=$(PAUZA) bash s6/p1/disk.sh vjezba
+s6-p1-clean: ## otkači i obriši volumen vježbe
+> @if [ -e /var/tmp/ruo6-disk.img ] || mountpoint -q /mnt/ruo6; then sudo bash s6/p1/disk.sh down; else echo "s6-p1: nema volumena vježbe"; fi
+
+s6-p2: ## object storage (S3): Garage, bucket i ključ, pa S3 klijent (put, list, get, presigned URL)
+> @$(call need,garage)
+> bash s6/p2/objekti.sh up
+> bash s6/p2/objekti.sh test
+s6-p2-clean: ## gasi Garage i briše njegove podatke
+> -bash s6/p2/objekti.sh down
+> rm -rf s6/.lab/garage
+
+s6-baza:
+> @bash s6/p3/baza.sh up >/dev/null
+s6-p3: ## PostgreSQL: instanca, uloge/shema/privilegije iz SQL koda (2x, idempotentno), test privilegija
+> bash s6/p3/baza.sh up
+> bash s6/p3/baza.sh test
+s6-p3-replika: s6-baza ## replika (pg_basebackup, streaming): upis na primarnoj, čitanje na replici
+> bash s6/p3/baza.sh replika
+s6-p3-clean: ## gasi instance i briše podatke baze
+> -bash s6/p3/baza.sh down
+> rm -rf s6/.lab/pg
+
+s6-p4: s6-baza ## backup politika: 4 backupa s prometom, retencija, kopija u S3 (ako radi s6-p2)
+> bash s6/p4/backup.sh serija
+s6-p4-restore: s6-baza ## kvar (DROP TABLE), test restore-a, oporavak, mjerenje RPO i RTO
+> @test -n "$$(ls s6/.lab/backup/*.dump 2>/dev/null)" || bash s6/p4/backup.sh backup
+> bash s6/p4/backup.sh restore
+s6-p4-clean: ## briše backupe i restore instancu
+> -bash s6/p4/backup.sh obrisi
+
+s6-clean: s6-p4-clean s6-p3-clean s6-p2-clean s6-p1-clean ## čisti cijelu sedmicu 6
+> rm -rf s6/.lab
+
 ##@ Skupno
-all: check s2-p1 s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4 s3-p5 s4-p1 s4-p2 s4-p3 s4-p4 s5-p1 s5-p2 s5-p3 s5-p4 ## svi primjeri redom, sekvencijalno (idempotentno: može se ponoviti)
+all: check s2-p1 s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4 s3-p5 s4-p1 s4-p2 s4-p3 s4-p4 s5-p1 s5-p2 s5-p3 s5-p4 s6-p1 s6-p2 s6-p3 s6-p4 ## svi primjeri redom, sekvencijalno (idempotentno: može se ponoviti)
 > @$(call banner,SVI PRIMJERI ZAVRSENI)
 safe-all: ## sve što ne mijenja sistem (plan/validate/--check/dry-run)
-> $(MAKE) --no-print-directory s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4-config s3-p5 s4-p1 s4-p2 s4-p3 s4-p4 s5-p1 s5-p2 s5-p3 s5-p4
+> $(MAKE) --no-print-directory s2-p2 s2-p3 s2-p4 s3-p1 s3-p2 s3-p3 s3-p4-config s3-p5 s4-p1 s4-p2 s4-p3 s4-p4 s5-p1 s5-p2 s5-p3 s5-p4 s6-p1
 clean-all: ## čišćenje svih primjera
-> -$(MAKE) --no-print-directory s2-p1-clean s2-p3-clean s2-p4-clean s3-p3-clean s3-p4-clean s3-p5-clean s4-clean s5-clean
+> -$(MAKE) --no-print-directory s2-p1-clean s2-p3-clean s2-p4-clean s3-p3-clean s3-p4-clean s3-p5-clean s4-clean s5-clean s6-clean

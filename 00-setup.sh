@@ -11,6 +11,7 @@
 set -euo pipefail
 
 KIND_VERSION="${KIND_VERSION:-v0.24.0}"
+GARAGE_VERSION="${GARAGE_VERSION:-v2.5.0}"
 SKIP_LIBVIRT="${SKIP_LIBVIRT:-0}"
 SKIP_K8S="${SKIP_K8S:-0}"
 INSTALL_DOCKER="${INSTALL_DOCKER:-0}"
@@ -30,7 +31,7 @@ IN_WSL=0; grep -qi microsoft /proc/version 2>/dev/null && IN_WSL=1
 HAS_SYSTEMD=0; [ "$(ps -p 1 -o comm= 2>/dev/null || true)" = "systemd" ] && HAS_SYSTEMD=1
 NEED_RELOGIN=0
 
-step "1/9 Provjera okruženja"
+step "1/10 Provjera okruženja"
 ok "$(. /etc/os-release && echo "$PRETTY_NAME")"
 if [ "$IN_WSL" = 1 ]; then
   ok "WSL2 detektovan"
@@ -43,7 +44,7 @@ if [ "$IN_WSL" = 1 ]; then
   fi
 fi
 
-step "2/9 Osnovni paketi (git, make, curl, ansible)"
+step "2/10 Osnovni paketi (git, make, curl, ansible)"
 sudo apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   git make curl wget gnupg lsb-release ca-certificates software-properties-common \
@@ -51,7 +52,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   iproute2 iputils-ping nftables
 ok "git, make, curl, ansible, iproute2, iputils-ping, nftables"
 
-step "3/9 HashiCorp repozitorij: Terraform i Packer"
+step "3/10 HashiCorp repozitorij: Terraform i Packer"
 KEYRING=/usr/share/keyrings/hashicorp-archive-keyring.gpg
 if [ ! -f "$KEYRING" ]; then
   wget -qO- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor --yes -o "$KEYRING"
@@ -62,7 +63,7 @@ sudo apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y terraform packer
 ok "terraform i packer"
 
-step "4/9 KVM i libvirt"
+step "4/10 KVM i libvirt"
 if [ "$SKIP_LIBVIRT" = 1 ]; then
   warn "preskočeno (SKIP_LIBVIRT=1)"
 else
@@ -92,7 +93,7 @@ else
   if [ -e /dev/kvm ]; then ok "/dev/kvm postoji"; else warn "nema /dev/kvm: VM primjeri ostaju na nivou plan/validate"; fi
 fi
 
-step "5/9 Docker"
+step "5/10 Docker"
 if have docker && docker version >/dev/null 2>&1; then
   ok "docker radi: $(docker --version)"
 elif [ "$INSTALL_DOCKER" = 1 ]; then
@@ -109,7 +110,7 @@ else
   warn "ili pokrenuti: INSTALL_DOCKER=1 ./00-setup.sh"
 fi
 
-step "6/9 kubectl i kind"
+step "6/10 kubectl i kind"
 if [ "$SKIP_K8S" = 1 ]; then
   warn "preskočeno (SKIP_K8S=1)"
 else
@@ -125,7 +126,7 @@ else
   ok "kubectl i kind"
 fi
 
-step "7/9 SSH ključ za virtualne mašine"
+step "7/10 SSH ključ za virtualne mašine"
 if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
   ok "~/.ssh/id_ed25519 već postoji"
 else
@@ -134,7 +135,7 @@ else
   ok "napravljen ~/.ssh/id_ed25519"
 fi
 
-step "8/9 DNS, e-pošta i SFTP (sedmica 5)"
+step "8/10 DNS, e-pošta i SFTP (sedmica 5)"
 # Postfix bez pitanja; servisi se instaliraju zbog programa, a pokreću se samo u labu (namespace-ovi),
 # pa se sistemske instance gase i ne pokreću s računarom. SSH server se gasi samo ako ga skripta tek instalira.
 echo "postfix postfix/main_mailer_type select No configuration" | sudo debconf-set-selections
@@ -148,8 +149,28 @@ if [ "$HAS_SYSTEMD" = 1 ]; then
 fi
 ok "bind9, postfix, dovecot, opendkim, swaks, openssh-server (sistemski servisi isključeni)"
 
-step "9/9 Provjera"
-for t in git make terraform packer ansible docker kubectl kind virsh nft ip named dig postfix dovecot opendkim swaks sshd; do
+step "9/10 Pohrana i baze (sedmica 6): PostgreSQL, boto3, Garage (S3)"
+# PostgreSQL se instalira zbog programa (initdb, pg_ctl, psql, pg_dump); primjeri pokreću vlastite instance
+# kao običan korisnik, pa se sistemska instanca gasi i ne pokreće s računarom.
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-client python3-boto3 e2fsprogs util-linux
+if [ "$HAS_SYSTEMD" = 1 ]; then sudo systemctl disable --now postgresql >/dev/null 2>&1 || true; fi
+ok "postgresql $(ls /usr/lib/postgresql 2>/dev/null | sort -V | tail -1) (sistemska instanca isključena), python3-boto3"
+# Garage: S3-kompatibilan object storage, jedan statički binarni fajl (MinIO od oktobra 2025. ne objavljuje
+# binarne verzije ni Docker slike zajednice, pa se u nastavi koristi Garage)
+if have garage && garage --version 2>/dev/null | grep -q "${GARAGE_VERSION#v}"; then
+  ok "garage $GARAGE_VERSION već postoji"
+else
+  case "$(uname -m)" in x86_64) G_ARCH=x86_64-unknown-linux-musl ;; aarch64) G_ARCH=aarch64-unknown-linux-musl ;; *) G_ARCH= ;; esac
+  if [ -n "$G_ARCH" ] && wget -qO /tmp/garage "https://garagehq.deuxfleurs.fr/_releases/$GARAGE_VERSION/$G_ARCH/garage"; then
+    sudo install -m 755 /tmp/garage /usr/local/bin/garage && rm -f /tmp/garage
+    ok "$(garage --version | sed -n 1p)"
+  else
+    warn "garage $GARAGE_VERSION nije preuzet (provjeriti verziju na garagehq.deuxfleurs.fr; npr. GARAGE_VERSION=v2.3.0 ./00-setup.sh)"
+  fi
+fi
+
+step "10/10 Provjera"
+for t in git make terraform packer ansible docker kubectl kind virsh nft ip named dig postfix dovecot opendkim swaks sshd psql garage losetup; do
   if have "$t"; then ok "$t"; else warn "$t nije instaliran"; fi
 done
 # sed -n 1p cita cijeli ulaz (head -1 bi uz pipefail prekinuo skriptu zbog SIGPIPE)

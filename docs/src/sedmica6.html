@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="bs"><head><meta charset="utf-8">
+<title>RuO – Bilješke s predavanja – Sedmica 6</title>
+<link rel="stylesheet" href="style.css"></head><body>
+
+<header class="top"><img src="logo.png" alt="Univerzitet u Zenici, Politehnički fakultet"><div class="uni"><b>Univerzitet u Zenici</b><span>Politehnički fakultet</span></div></header>
+
+<div class="kicker">Bilješke s predavanja · Sedmica 6</div>
+<h1>Pohrana i baze podataka kao kod</h1>
+<p class="lead">Podaci kao kod: tri vrste pohrane (block, file i object storage), PostgreSQL s ulogama, privilegijama i shemom iz datoteka u Gitu, replikacija, te backup politika s mjerenjem RPO i RTO i testom restore-a. Svaki primjer radi lokalno, a ishod se provjerava testom.</p>
+
+<table class="meta">
+<tr><td>Predmet</td><td>Računarstvo u oblaku</td></tr>
+<tr><td>Studij</td><td>II ciklus studija, III semestar, akademska godina 2026/27</td></tr>
+<tr><td>Nastavnik</td><td>V. prof. dr. Đulaga Hadžić</td></tr>
+<tr><td>Asistent</td><td>ass. Mr. Adin Jahić</td></tr>
+<tr><td>Termin</td><td>petak, 20.11.2026, 17:15–20:15, Kabinet 3204</td></tr>
+<tr><td>Tema</td><td>Pohrana i baze podataka kao kod</td></tr>
+<tr><td>Kod</td><td>github.com/Dadyze/RuO-2026-27 (mape <code>s6/p1</code> do <code>s6/p4</code> i <code>s6/okruzenje.sh</code>)</td></tr>
+</table>
+
+<section>
+<div class="kicker">Okvir nastavne jedinice</div>
+<h2>Ciljevi i način rada</h2>
+<p>Do sada su sve mašine i servisi bili zamjenjivi: VM se uništi i ponovo napravi iz koda, kontejner se obnovi iz slike, konfiguracija se ponovo primijeni Ansibleom. Podaci su izuzetak. Narudžbe, korisnički računi i datoteke ne nastaju iz koda nego iz rada sistema, pa se ne mogu "ponovo primijeniti". Zato se kod podataka kodom opisuje sve <em>oko</em> njih: gdje i kako se čuvaju, ko im smije pristupiti, kako se kopiraju i kako se vraćaju. Ova sedmica uvodi upravo to.</p>
+<p>Svi primjeri rade na računaru studenta, bez računa u oblaku. Block storage se vježba na loop uređaju (datoteka koju jezgra vidi kao disk), object storage na <strong>Garageu</strong> (S3-kompatibilan server od jednog binarnog fajla), a baza je <strong>PostgreSQL</strong>. Garage i PostgreSQL rade kao obični procesi korisnika na adresi <code>127.0.0.1</code>, s podacima u direktoriju <code>s6/.lab</code>, pa za njih ne treba <code>sudo</code>.</p>
+<p>Nakon nastavne jedinice student je u stanju:</p>
+<ul>
+<li>objasniti razliku između block, file i object storagea i za dati slučaj izabrati odgovarajući,</li>
+<li>napraviti, prikačiti, formatirati i proširiti blok volumen i objasniti šta od toga radi oblak, a šta operativni sistem,</li>
+<li>pokrenuti S3-kompatibilan object storage, napraviti bucket i ključ s najmanjim pravima i raditi s objektima kroz S3 API (boto3),</li>
+<li>opisati PostgreSQL uloge, shemu i privilegije SQL kodom koji je idempotentan i provjeriti ga testom,</li>
+<li>postaviti repliku (streaming replikacija) i objasniti zašto replikacija nije backup,</li>
+<li>definisati backup politiku (RPO, RTO, retencija, pravilo 3-2-1), napraviti test restore-a i izmjeriti postignuti RPO i RTO.</li>
+</ul>
+
+<h3>Okruženje i pokretanje</h3>
+<p>Alate za ovu sedmicu (PostgreSQL, <code>python3-boto3</code> i Garage) instalira <code>00-setup.sh</code>. Sistemsku instancu PostgreSQL-a skripta gasi, jer primjeri pokreću vlastite instance. Ako je skripta već pokrenuta ranije, pokrene se ponovo (idempotentna je):</p>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 0 · početak</span></div><pre>cd ~/RuO-2026-27 &amp;&amp; git pull
+./00-setup.sh                    # dodaje postgresql, python3-boto3 i garage (/usr/local/bin/garage)
+make check                       # psql, garage i losetup moraju biti "ok"
+make s6-p1                       # pregled diskova; zatim s6-p2 ... s6-p4, opcionalno s6-p1-lab, s6-p3-replika, s6-p4-restore</pre></div>
+<div class="note "><span class="lbl">Rad bez troškova</span>Jedini cilj koji traži <code>sudo</code> je <code>s6-p1-lab</code> (prikačivanje i montiranje diska), i on dira samo datoteku <code>/var/tmp/ruo6-disk.img</code> i direktorij <code>/mnt/ruo6</code>. Ciljevi primjera 2 do 4 pokreću procese korisnika na portovima <code>3900</code>–<code>3903</code> (Garage) i <code>5461</code>–<code>5463</code> (PostgreSQL), samo na <code>127.0.0.1</code>. Lozinke i tajne se generišu pri prvom pokretanju u <code>s6/.lab</code> i nisu u Gitu. Sve se briše sa <code>make s6-clean</code>.</div>
+<div class="note warn"><span class="lbl">Redoslijed</span>Primjer 4 pravi backup baze iz primjera 3 (ciljevi <code>s6-p4</code> i <code>s6-p4-restore</code> je sami podižu ako ne radi). Kopija backupa ide i u bucket iz primjera 2 ako Garage radi, pa je najbolje redom: <code>s6-p2</code>, <code>s6-p3</code>, <code>s6-p3-replika</code>, <code>s6-p4</code>, <code>s6-p4-restore</code>.</div>
+</section>
+
+<section>
+<div class="kicker">1 · Pojam i pozadina</div>
+<h2>Tri vrste pohrane: block, file i object</h2>
+<p>Svaki oblak nudi iste tri vrste pohrane, jer svaka odgovara na drugo pitanje: <em>koje blokove na disku</em> (block), <em>koju datoteku na kojoj putanji</em> (file) ili <em>koji objekat pod kojim ključem</em> (object). Razlikuju se po tome ko upravlja datotečnim sistemom, koliko klijenata istovremeno smije pristupiti i preko čega.</p>
+<figure>
+<svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, sans-serif" font-size="12">
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#12212b"/></marker></defs>
+<g fill="#eef2f6" stroke="#55677a">
+<rect x="10" y="10" width="220" height="62" rx="8"/><rect x="250" y="10" width="220" height="62" rx="8"/><rect x="490" y="10" width="220" height="62" rx="8"/>
+</g>
+<text x="120" y="34" text-anchor="middle" font-weight="700">VM (aplikacija)</text><text x="120" y="54" text-anchor="middle" fill="#55677a">ext4 na /dev/vdb: OS VM-a</text>
+<text x="360" y="34" text-anchor="middle" font-weight="700">VM 1, VM 2, VM 3</text><text x="360" y="54" text-anchor="middle" fill="#55677a">mount -t nfs server:/dijeljeno</text>
+<text x="600" y="34" text-anchor="middle" font-weight="700">bilo ko s ključem</text><text x="600" y="54" text-anchor="middle" fill="#55677a">HTTP: PUT/GET /bucket/kljuc</text>
+<g stroke="#12212b" marker-end="url(#a)"><path d="M120 72V118"/><path d="M360 72V118"/><path d="M600 72V118"/></g>
+<text x="128" y="100" fill="#55677a">čita/piše blokove</text><text x="368" y="100" fill="#55677a">NFS / SMB</text><text x="608" y="100" fill="#55677a">S3 API</text>
+<g fill="#e3f3f0" stroke="#0f766e">
+<rect x="10" y="120" width="220" height="62" rx="8"/><rect x="250" y="120" width="220" height="62" rx="8"/><rect x="490" y="120" width="220" height="62" rx="8"/>
+</g>
+<text x="120" y="144" text-anchor="middle" font-weight="700">block: volumen</text><text x="120" y="164" text-anchor="middle" fill="#55677a">EBS, Azure Disk, qcow2, LVM</text>
+<text x="360" y="144" text-anchor="middle" font-weight="700">file: dijeljeni direktorij</text><text x="360" y="164" text-anchor="middle" fill="#55677a">EFS, Azure Files, NFS server</text>
+<text x="600" y="144" text-anchor="middle" font-weight="700">object: bucket</text><text x="600" y="164" text-anchor="middle" fill="#55677a">S3, Azure Blob, GCS, Garage</text>
+<text x="120" y="210" text-anchor="middle" fill="#55677a">primjer 1 · s6/p1</text><text x="360" y="210" text-anchor="middle" fill="#55677a">napomena niže</text><text x="600" y="210" text-anchor="middle" fill="#55677a">primjer 2 · s6/p2</text>
+</svg>
+<figcaption>Slika 1. Block storage daje sirove blokove jednoj mašini, a datotečni sistem pravi njen OS. File storage daje gotov datotečni sistem preko mreže, pa ga dijeli više mašina. Object storage nema datotečni sistem: objekti se čitaju i pišu cijeli, preko HTTP API-ja.</figcaption>
+</figure>
+<table class="t">
+<tr><th></th><th>Block</th><th>File</th><th>Object</th></tr>
+<tr><td>Jedinica</td><td>blok (npr. 4 KiB) na adresi</td><td>datoteka na putanji</td><td>objekat pod ključem, s metapodacima</td></tr>
+<tr><td>Pristup</td><td>jedna mašina (prikačen disk)</td><td>više mašina istovremeno</td><td>bilo ko s ključem, preko mreže</td></tr>
+<tr><td>Izmjena</td><td>bilo koji bajt, na mjestu</td><td>bilo koji bajt, uz zaključavanje</td><td>samo cijeli objekat (novi PUT)</td></tr>
+<tr><td>Kašnjenje</td><td>najmanje (ispod 1 ms)</td><td>malo (mreža + server)</td><td>veće (HTTP zahtjev po objektu)</td></tr>
+<tr><td>Veličina</td><td>do nekoliko desetina TiB po volumenu</td><td>do PiB</td><td>praktično neograničena</td></tr>
+<tr><td>Tipična upotreba</td><td>sistemski disk, baza podataka</td><td>dijeljeni direktoriji, stare aplikacije</td><td>backupi, slike, logovi, statički web, data lake</td></tr>
+</table>
+<div class="note bg"><span class="lbl">Pozadina: file storage i NFS</span>File storage je server koji izvozi direktorij, a klijenti ga montiraju kao lokalni. Na Linuxu je to <strong>NFS</strong>: server u <code>/etc/exports</code> navodi šta izvozi i kome, npr. <code>/srv/dijeljeno 10.40.1.0/24(rw,sync,root_squash)</code>, a klijent ga montira naredbom <code>mount -t nfs 10.40.1.5:/srv/dijeljeno /mnt/dijeljeno</code> (ili redom u <code>/etc/fstab</code>, odnosno Ansible modulom <code>ansible.posix.mount</code>). Opcija <code>root_squash</code> root-a s klijenta pretvara u neprivilegovanog korisnika, a <code>sync</code> potvrđuje upis tek kad je na disku servera. Windows koristi <strong>SMB</strong>. U oblaku su to AWS EFS i Azure Files: usluga na koju se klijent spaja istim protokolom (NFS ili SMB). U ovoj sedmici NFS se ne pokreće, jer NFS server u jezgri ne radi u WSL2; primjer je ostavljen za zadatak na Linux VM-u iz sedmice 2.</div>
+<div class="note warn"><span class="lbl">Zašto ne dijeliti blok volumen</span>Datotečni sistem kao ext4 pretpostavlja da je on jedini koji piše po disku: drži dio metapodataka u memoriji i ne zna za tuđe izmjene. Ako isti blok volumen montiraju dvije mašine, svaka pokvari ono što je druga napisala. Zato oblak blok volumen zadano prikačuje samo jednoj VM, a za dijeljenje postoje file storage ili posebni klaster datotečni sistemi (GFS2, OCFS2).</div>
+</section>
+
+<section class="pb">
+<div class="kicker">2 · Primjer 1 · s6/p1</div>
+<h2>Block storage: volumen, datotečni sistem i proširenje</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>U oblaku volumen nastaje API pozivom (Terraform resurs <code>aws_ebs_volume</code> ili <code>libvirt_volume</code> iz sedmice 2), a zatim se prikači VM-u, u kojoj se pojavi kao novi disk (<code>/dev/vdb</code>, <code>/dev/nvme1n1</code>). Sve dalje radi operativni sistem VM-a: pravi datotečni sistem, montira ga i, kad se volumen poveća, proširuje datotečni sistem. Primjer to radi lokalno: datoteka <code>/var/tmp/ruo6-disk.img</code> je volumen, <code>losetup</code> je "prikačivanje", a <code>/dev/loopN</code> je disk koji VM vidi.</div>
+<div class="code long"><div class="hd"><span>bash</span><span>Isječak 1 · s6/p1/disk.sh: vježba (izvod)</span></div><pre>truncate -s 256M /var/tmp/ruo6-disk.img       # novi volumen (rijetka datoteka: thin provisioning)
+losetup -f --show /var/tmp/ruo6-disk.img      # attach: datoteka postaje blok uređaj /dev/loopN
+mkfs.ext4 -q -L ruo6-podaci /dev/loopN        # datotečni sistem pravi OS, ne oblak
+mount /dev/loopN /mnt/ruo6
+
+umount /mnt/ruo6 &amp;&amp; losetup -d /dev/loopN    # detach: podaci ostaju na volumenu
+losetup -f --show ... &amp;&amp; mount ...           # attach (u oblaku: drugoj VM) i podaci su tu
+
+truncate -s 512M /var/tmp/ruo6-disk.img       # oblak: povećanje volumena
+losetup -c /dev/loopN                         # OS: uređaj je sada veći
+resize2fs /dev/loopN                          # OS: datotečni sistem zauzima novi prostor</pre></div>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 2 · pokretanje</span></div><pre>make s6-p1           # lsblk, df -hT, findmnt: samo čita
+make s6-p1-lab       # [sudo] cijela vježba; PAUZA=1 make s6-p1-lab čeka Enter nakon svakog koraka
+make s6-p1-clean     # otkači i obriši volumen</pre></div>
+<div class="out"><div class="hd">izlaz make s6-p1-lab (skraćeno)</div><pre>== 1. Novi volumen od 256 MB: datoteka je 'rijetka' (sparse), pa na disku još ne zauzima prostor
+$ ls -lsh /var/tmp/ruo6-disk.img
+0 -rw-r--r-- 1 root root 256M Nov 13 15:38 /var/tmp/ruo6-disk.img
+
+== 2. Prikačivanje (attach): datoteka postaje blok uređaj /dev/loopN, bez datotečnog sistema
+$ losetup -f --show /var/tmp/ruo6-disk.img
+/dev/loop0
+NAME  TYPE  SIZE FSTYPE MOUNTPOINTS
+loop0 loop  256M
+
+== 3. Datotečni sistem (mkfs.ext4) i montiranje: tek sada postoje direktoriji i datoteke
+$ df -hT /mnt/ruo6
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/loop0     ext4  224M   28K  206M   1% /mnt/ruo6
+$ ls -lsh /var/tmp/ruo6-disk.img
+17M -rw-r--r-- 1 root root 256M Nov 13 15:38 /var/tmp/ruo6-disk.img
+
+== 4. Otkačivanje i ponovno prikačivanje (detach/attach): podaci žive na volumenu, ne na 'VM-u'
+$ cat /mnt/ruo6/narudzbe.txt
+narudzba 1001
+
+== 5. Proširenje volumena bez gašenja: veći uređaj, pa veći datotečni sistem (resize2fs, online)
+$ lsblk -o NAME,SIZE /dev/loop0
+loop0  512M
+   (uređaj je 512M, ali datotečni sistem još zna samo za 256M)
+$ resize2fs /dev/loop0
+The filesystem on /dev/loop0 is now 131072 (4k) blocks long.
+$ df -h /mnt/ruo6
+/dev/loop0      464M   28K  428M   1% /mnt/ruo6</pre></div>
+<p>Tri detalja iz izlaza vrijedi zapamtiti. Prvo, nova datoteka od 256 MB na disku zauzima 0 bajta, a nakon <code>mkfs</code> 17 MB: to je <strong>thin provisioning</strong>, a isto radi i qcow2 iz sedmice 2. Pružatelj zato može prodati više prostora nego što fizički ima, pa se kod njega prati stvarno zauzeće. Drugo, od 256 MB datotečnom sistemu ostaje 224 MB, a korisniku 206 MB: ext4 dio prostora troši na tabelu inode-a i dnevnik (journal), a 5% čuva za root-a. Treće, proširenje ima dva koraka i dva vlasnika: veći volumen daje oblak, a veći datotečni sistem pravi OS. Ako se drugi korak zaboravi, disk je veći, a <code>df</code> i dalje javlja da je pun.</p>
+<div class="note"><span class="lbl">Online i offline proširenje</span>ext4 i XFS se mogu proširiti dok su montirani (<code>resize2fs</code>, odnosno <code>xfs_growfs</code>). Neka okruženja (kontejneri, stariji WSL kerneli) to ne dozvoljavaju, pa skripta tada kratko otkači datotečni sistem, provjeri ga (<code>e2fsck -f</code>) i proširi offline. Smanjivanje je drugačije: XFS se uopšte ne može smanjiti, a ext4 samo offline, pa se volumen u praksi samo povećava. Snimak volumena (<em>snapshot</em>) kod pružatelja je kopija svih blokova u jednom trenutku i dobar je kao brza tačka povratka, ali za bazu koja radi daje kopiju "kao nakon nestanka struje" (vidi primjer 4).</div>
+</section>
+
+<section>
+<div class="kicker">3 · Primjer 2 · s6/p2</div>
+<h2>Object storage: S3 API s Garageom</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>S3 (Simple Storage Service) je AWS-ova usluga iz 2006, a njen HTTP API je postao standard: isti klijent radi s AWS S3, Azure Blobom preko prolaza, Ceph RGW, Garageom ili MinIO-om, i mijenja se samo adresa servera (<em>endpoint</em>). Prostor je ravan: <strong>bucket</strong> sadrži <strong>objekte</strong>, a objekat je ključ (npr. <code>izvjestaji/2026/11/novembar.txt</code>), sadržaj i metapodaci. Direktorija nema: kosa crta je dio ključa, a "direktorij" je samo zajednički prefiks. Svaki zahtjev je potpisan tajnim ključem (AWS Signature V4), pa server zna ko pita i provjerava njegova prava na bucket.</div>
+<div class="note warn"><span class="lbl">Zašto Garage, a ne MinIO</span>Silabus spominje MinIO, koji je godinama bio zadani izbor za lokalni S3. MinIO, Inc. je u oktobru 2025. prestao objavljivati binarne verzije i Docker slike izdanja zajednice (zadnje slike imaju poznatu ranjivost), a u 2026. su repozitoriji <code>minio/minio</code> i <code>minio/mc</code> nestali s Docker Huba. Garage (Deuxfleurs, AGPLv3) je S3-kompatibilan server pisan u Rustu, jedan statički binarni fajl, napravljen za klastere na više lokacija. Za klijenta je razlika nevidljiva: kod iz ovog primjera bez izmjena radi i s MinIO-om i s AWS S3.</div>
+<div class="code"><div class="hd"><span>toml</span><span>Isječak 3 · s6/p2/garage.toml (izvod)</span></div><pre>metadata_dir = "@DIR@/meta"          # metapodaci: buckets, ključevi, popis objekata (mala baza)
+data_dir     = "@DIR@/data"          # sami objekti, podijeljeni u blokove
+replication_factor = 1               # lab: jedna kopija. Produkcija: 3 (svaki blok u 3 zone)
+rpc_secret   = "@RPC_SECRET@"        # zajednička tajna čvorova (32 bajta, hex)
+
+[s3_api]
+s3_region     = "garage"
+api_bind_addr = "127.0.0.1:3900"     # S3 API: ovdje se spajaju klijenti (boto3, aws cli, rclone)</pre></div>
+<p>Skripta <code>objekti.sh</code> zamijeni <code>@...@</code> vrijednosti (tajne generiše <code>openssl rand</code>), pokrene server i zatim kodom opiše ostatak. Garage je klaster i prije prvog upisa mora znati <strong>layout</strong>: koji čvor drži koliko podataka i u kojoj zoni. Tek onda se prave bucket i ključ, a ključ dobija prava samo na taj jedan bucket.</p>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 4 · s6/p2/objekti.sh (izvod)</span></div><pre>garage layout assign -z dc1 -c 1G "$NODE"    # čvor u zoni dc1, kapacitet 1 GB
+garage layout apply --version 1              # layout ima verziju: promjena klastera je eksplicitna
+garage bucket create ruo-backup
+garage key create ruo-backup-kljuc
+garage bucket allow --read --write --owner ruo-backup --key ruo-backup-kljuc
+# ID i tajna ključa idu u s6/.lab/garage/s3.env (chmod 600), odakle ih čitaju s3.py i backup.sh</pre></div>
+<div class="code long"><div class="hd"><span>python</span><span>Isječak 5 · s6/p2/s3.py (izvod)</span></div><pre>s3 = boto3.client("s3", endpoint_url=os.environ["S3_ENDPOINT"], region_name="garage",
+                  config=Config(s3={"addressing_style": "path"}))   # http://host:3900/bucket/kljuc
+
+s3.put_object(Bucket=b, Key="izvjestaji/2026/11/novembar.txt", Body=tijelo,
+              ContentType="text/plain", Metadata={"autor": "ruo", "sedmica": "6"})
+s3.list_objects_v2(Bucket=b, Prefix="izvjestaji/")               # "direktorij" = prefiks
+s3.list_objects_v2(Bucket=b, Delimiter="/")                      # prvi nivo: CommonPrefixes
+s3.head_object(Bucket=b, Key=k)                                  # metapodaci bez sadržaja
+url = s3.generate_presigned_url("get_object", Params={"Bucket": b, "Key": k}, ExpiresIn=60)</pre></div>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 6 · pokretanje</span></div><pre>make s6-p2           # objekti.sh up (konfiguracija, server, layout, bucket, ključ) + s3.py demo
+make s6-p2-clean     # gasi Garage i briše podatke</pre></div>
+<div class="out"><div class="hd">izlaz make s6-p2: koraci 2 do 4 (server, layout, bucket i ključ)</div><pre>== 2. Server (garage server) u pozadini
+  pokrenut (pid 25587), dnevnik: s6/.lab/garage/server.log
+== 3. Layout klastera: koji čvor drži koliko podataka i u kojoj zoni
+$ garage layout assign -z dc1 -c 1G 736a30c30f51bbdf63b8d2770d6d74d0bc7e2a336d8f6852962469cfe057032b
+$ garage layout apply --version 1
+  ID                Hostname  Address         Tags  Zone  Capacity   DataAvail         ResyncQueue  Version
+  736a30c30f51bbdf  vm        127.0.0.1:3901  []    dc1   953.7 MiB  29.3 GiB (11.6%)  0            v2.5.0
+== 4. Bucket i pristupni ključ s pravima samo na taj bucket (načelo najmanjih prava)
+$ garage bucket create ruo-backup
+$ garage key create ruo-backup-kljuc
+$ garage bucket allow --read --write --owner ruo-backup --key ruo-backup-kljuc
+  Permissions  Access key                                    Local aliases
+  RWO          GKa3d23b0583b648d69cb7f972  ruo-backup-kljuc
+  ključ GKa3d23b0583b648d69cb7f972 -&gt; s6/.lab/garage/s3.env (tajna se ne ispisuje)</pre></div>
+<div class="out"><div class="hd">izlaz make s6-p2: S3 klijent (s3.py demo)</div><pre>== 2. PUT: objekat = ključ + bajtovi + metapodaci (nema direktorija ni djelimičnog pisanja)
+  PUT s3://ruo-backup/izvjestaji/2026/11/novembar.txt
+  PUT s3://ruo-backup/izvjestaji/2026/10/oktobar.txt
+  PUT s3://ruo-backup/slike/logo.txt
+== 3. LIST s prefiksom: 'direktorij' je samo zajednički početak ključa
+  prefiks 'izvjestaji/':
+  2026-11-13 14:56:22        39 B  izvjestaji/2026/10/oktobar.txt
+  2026-11-13 14:56:22        39 B  izvjestaji/2026/11/novembar.txt
+  prvi nivo (Delimiter='/'): ['izvjestaji/', 'slike/']
+== 4. HEAD: metapodaci bez preuzimanja sadržaja; ETag je MD5 sadržaja (za obični PUT)
+  ContentLength=39  ContentType=text/plain  Metadata={'autor': 'ruo', 'sedmica': '6'}
+  ETag="99a794363f32bb33a7487f215b447db6"   md5 lokalno="99a794363f32bb33a7487f215b447db6"
+== 5. Izmjena = novi PUT cijelog objekta (stari sadržaj se zamjenjuje, ne dopisuje)
+  GET: narudzbe za novembar: 1001, 1002, 1003 | 1004 |
+== 6. Presigned URL: privremeni link bez ključa (vrijedi 60 s), npr. za preuzimanje iz browsera
+   http://127.0.0.1:3900/ruo-backup/slike/logo.txt?X-Amz-...&amp;X-Amz-Expires=60&amp;X-Amz-Signature=...
+   GET s potpisanim URL-om: HTTP 200
+   isti URL bez potpisa:      HTTP 403 (bucket nije javan)
+== 7. Pogrešan ključ: zahtjev je potpisan (AWS SigV4), pa server odbija nepoznat ključ
+   AccessDenied: 403</pre></div>
+<p>Pokretanje je idempotentno: drugi <code>make s6-p2</code> javlja "već radi" i "layout već postoji", ne pravi novi bucket ni ključ, a <code>bucket allow</code> samo potvrdi postojeća prava. Vrijeme u popisu objekata je u UTC-u, kao i svugdje u S3 API-ju.</p>
+<div class="note"><span class="lbl">Presigned URL</span>Potpisani URL nosi potpis i rok važenja u samom linku (<code>X-Amz-Signature</code>, <code>X-Amz-Expires</code>). Ko ima link, smije uraditi tačno tu operaciju na tom objektu do isteka roka, bez ključa. Tako aplikacija korisniku daje preuzimanje velike datoteke direktno iz storagea, umjesto da je prosljeđuje kroz svoj server, a bucket ostaje privatan. Javni bucketi su čest uzrok curenja podataka, pa ih oblaci zadano zabranjuju (AWS: <em>Block Public Access</em>).</div>
+<div class="note"><span class="lbl">Isti posao u oblaku, kao Terraform</span>Na AWS-u bi bucket, zabrana javnog pristupa, verzionisanje i pravilo životnog ciklusa bili resursi: <code>aws_s3_bucket</code>, <code>aws_s3_bucket_public_access_block</code>, <code>aws_s3_bucket_versioning</code> (stara verzija objekta se čuva nakon prepisivanja ili brisanja, pa greška nije konačna) i <code>aws_s3_bucket_lifecycle_configuration</code> (npr. backupe nakon 30 dana prebaci u jeftiniju klasu, a nakon 365 obriši). Ključ s pravima samo na taj bucket je IAM politika. Pristup je isti kao u ovom primjeru: zadano sve zatvoreno, a prava se daju po bucketu i po operaciji.</div>
+</section>
+
+<section class="pb">
+<div class="kicker">4 · Pojam i pozadina</div>
+<h2>Baza podataka kao kod</h2>
+<p>Baza ima dva dijela koja se ponašaju potpuno različito. <strong>Struktura</strong> (instanca i njene postavke, uloge, baze, sheme, tabele, privilegije, pravila pristupa) se piše unaprijed, mijenja rijetko i namjerno, i pripada Gitu, kao i sve do sada. <strong>Podaci</strong> nastaju u radu i ne mogu se izvesti iz koda; za njih postoje replikacija i backup. Kad je struktura kod, nova instanca (za test, za repliku, za restore) dobija identične uloge i prava jednom naredbom, umjesto da ih neko ručno "klikne" i zaboravi pola.</p>
+<table class="t">
+<tr><th>Dio</th><th>Gdje je u primjeru</th><th>U praksi još</th></tr>
+<tr><td>postavke instance</td><td><code>s6/p3/postgresql.ruo.conf</code></td><td>Ansible rola, parametar grupa kod RDS-a (<code>aws_db_parameter_group</code>)</td></tr>
+<tr><td>ko se smije spojiti i kako</td><td><code>s6/p3/pg_hba.conf</code></td><td>security grupa + <code>pg_hba</code>; kod RDS-a samo mreža i IAM</td></tr>
+<tr><td>uloge i lozinke</td><td><code>sql/01-uloge.sql</code> (lozinke iz <code>.lab</code>)</td><td>Terraform provider <code>cyrilgdn/postgresql</code>, Ansible <code>community.postgresql</code>, Vault</td></tr>
+<tr><td>baza, shema, tabele</td><td><code>sql/02-baza.sql</code>, <code>sql/03-shema.sql</code></td><td>alati za migracije: Flyway, Liquibase, Alembic, Django/Rails migracije</td></tr>
+<tr><td>privilegije</td><td><code>sql/04-privilegije.sql</code></td><td>isto kao uloge; provjera testom</td></tr>
+</table>
+<div class="note bg"><span class="lbl">Pozadina: WAL</span>PostgreSQL svaku izmjenu prvo upiše u <strong>WAL</strong> (write-ahead log), sekvencijalni dnevnik izmjena, i tek kad je WAL na disku potvrdi transakciju. Same tabele se ažuriraju kasnije. Ako server padne, pri pokretanju ponovo primijeni WAL od zadnje kontrolne tačke i ništa potvrđeno se ne gubi. Na istom dnevniku počiva sve u ovoj sedmici što nije <code>pg_dump</code>: replika prima WAL i primjenjuje ga (primjer 3), a arhiva WAL-a omogućava povratak u bilo koji trenutak (PITR, primjer 4). Pozicija u WAL-u je <strong>LSN</strong> (log sequence number), pa se zaostatak replike mjeri kao razlika dva LSN-a u bajtima. MySQL ima isti mehanizam pod imenom <em>binlog</em> (za replikaciju) i <em>redo log</em> (za oporavak).</div>
+<p>U oblaku se baza najčešće uzima kao upravljana usluga: AWS RDS i Aurora, Azure Database for PostgreSQL, Google Cloud SQL. Pružatelj tada radi instalaciju, nadogradnje, replike i backupe, a korisnik i dalje kodom opisuje instancu (Terraform <code>aws_db_instance</code>: veličina, verzija, <code>backup_retention_period</code>, <code>multi_az</code>) i sve unutar baze: uloge, sheme i privilegije. Primjer 3 zato pokazuje upravo taj drugi dio, koji je isti i na vlastitom serveru i u RDS-u.</p>
+</section>
+
+<section>
+<div class="kicker">5 · Primjer 3 · s6/p3</div>
+<h2>PostgreSQL: uloge, shema i privilegije iz koda, pa replika</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>Baza <code>prodavnica</code> ima kupce, narudžbe i pogled sa zbirnim prometom. Pet uloga dobija tačno ono što im treba: <code>vlasnik</code> posjeduje objekte, ali se ne može prijaviti (migracije se rade sa <code>SET ROLE vlasnik</code>); <code>app</code> čita i piše, ali ne briše redove i ne mijenja strukturu; <code>izvjestaj</code> vidi samo zbirni pogled, ne i lične podatke kupaca; <code>repl</code> smije samo replikaciju; <code>backup</code> čita sve, a ne piše ništa. Administrator je OS korisnik, preko unix socketa i bez lozinke (<code>peer</code>). Skripta <code>baza.sh</code> napravi instancu (<code>initdb</code>), postavi <code>pg_hba.conf</code> i postavke iz repozitorija, pokrene je i primijeni četiri SQL datoteke redom.</div>
+<div class="code"><div class="hd"><span>pg_hba</span><span>Isječak 7 · s6/p3/pg_hba.conf</span></div><pre># TIP    BAZA          KORISNIK         ADRESA          METODA
+local    all           all                              peer            # admin: OS korisnik preko unix socketa
+host     prodavnica    app,izvjestaj    127.0.0.1/32    scram-sha-256   # aplikacija i izvještaji: samo svoja baza
+host     all           backup           127.0.0.1/32    scram-sha-256   # pg_dump: čita sve baze
+host     replication   repl             127.0.0.1/32    scram-sha-256   # replika i pg_basebackup
+host     all           all              0.0.0.0/0       reject          # sve ostalo: odbijeno</pre></div>
+<p>Pravila se čitaju odozgo i vrijedi <em>prvo</em> koje odgovara tipu veze, bazi, korisniku i adresi. Zato je zadnji red "sve ostalo odbij": bez njega bi o pristupu odlučivao samo redoslijed i slučajno širok red iznad. Baza <code>replication</code> nije prava baza, nego oznaka za replikacijske veze.</p>
+<div class="code long"><div class="hd"><span>sql</span><span>Isječak 8 · s6/p3/sql/01-uloge.sql (izvod)</span></div><pre>SELECT 'CREATE ROLE vlasnik NOLOGIN'        WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'vlasnik')   \gexec
+SELECT 'CREATE ROLE app LOGIN'              WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app')       \gexec
+SELECT 'CREATE ROLE repl LOGIN REPLICATION' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'repl')      \gexec
+
+ALTER ROLE app       PASSWORD :'app_lozinka'       CONNECTION LIMIT 20;   -- aplikacija: čita i piše
+ALTER ROLE izvjestaj PASSWORD :'izvjestaj_lozinka' CONNECTION LIMIT 5;    -- izvještaji: samo zbirni podaci
+GRANT pg_read_all_data TO backup;                                         -- ugrađena uloga: čita sve, ne piše</pre></div>
+<p>PostgreSQL nema <code>CREATE ROLE IF NOT EXISTS</code>, pa se idempotentnost postiže trikom: <code>SELECT</code> vrati tekst naredbe samo ako uloga ne postoji, a psql naredba <code>\gexec</code> izvrši ono što je upit vratio. Lozinke nisu u datoteci: <code>baza.sh</code> ih generiše jednom u <code>s6/.lab/pg/lozinke.env</code> i predaje kao psql varijable (<code>-v app_lozinka=...</code>), a <code>:'app_lozinka'</code> ih ubacuje kao ispravno navedeni string.</p>
+<div class="code long"><div class="hd"><span>sql</span><span>Isječak 9 · s6/p3/sql/03-shema.sql i 04-privilegije.sql (izvod)</span></div><pre>SET ROLE vlasnik;                                     -- objekte pravi i posjeduje vlasnik, ne aplikacija
+CREATE TABLE IF NOT EXISTS prodaja.narudzbe (
+  id       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  kupac_id bigint NOT NULL REFERENCES prodaja.kupci,
+  iznos    numeric(10,2) NOT NULL CHECK (iznos &gt; 0),
+  vrijeme  timestamptz NOT NULL DEFAULT now());
+CREATE OR REPLACE VIEW prodaja.v_promet_po_danu AS
+  SELECT vrijeme::date AS dan, count(*) AS narudzbi, sum(iznos) AS promet FROM prodaja.narudzbe GROUP BY 1;
+RESET ROLE;
+
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA prodaja TO app, izvjestaj;
+GRANT SELECT, INSERT, UPDATE ON prodaja.kupci, prodaja.narudzbe TO app;    -- bez DELETE
+GRANT SELECT ON prodaja.v_promet_po_danu TO izvjestaj;                    -- samo zbirni pogled
+ALTER DEFAULT PRIVILEGES FOR ROLE vlasnik IN SCHEMA prodaja GRANT SELECT, INSERT, UPDATE ON TABLES TO app;</pre></div>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 10 · pokretanje</span></div><pre>make s6-p3           # instanca, SQL kod dva puta (otisak stanja), test privilegija
+make s6-p3-replika   # replika na 5462 i provjera replikacije
+make s6-p3-clean     # gasi instance i briše podatke</pre></div>
+<div class="out"><div class="hd">izlaz make s6-p3: idempotentnost</div><pre>== 1. Instanca: initdb (prazan klaster) + pg_hba.conf i postavke iz repozitorija
+  initdb -&gt; ~/RuO-2026-27/s6/.lab/pg/primarni (PostgreSQL 16)
+  radi na 127.0.0.1:5461
+== 2. Prva primjena SQL koda (uloge, baza, shema, privilegije)
+  psql -f sql/01-uloge.sql
+  psql -f sql/02-baza.sql
+  psql -f sql/03-shema.sql
+  psql -f sql/04-privilegije.sql
+  otisak stanja: e85ef330086a
+== 3. Ponovna primjena istog koda: otisak mora ostati isti (idempotentnost)
+  ...
+  otisak stanja: e85ef330086a
+== 4. Uloge i njihova svojstva (\du)
+ Role name |                         Attributes
+-----------+------------------------------------------------------------
+ app       | 20 connections
+ backup    |
+ izvjestaj | 5 connections
+ repl      | Replication
+ student   | Superuser, Create role, Create DB, Replication, Bypass RLS
+ vlasnik   | Cannot login</pre></div>
+<p>Kod SQL-a nema ispisa <code>changed=0</code> kao kod Ansiblea, pa skripta pravi <strong>otisak stanja</strong>: MD5 izlaza naredbi <code>pg_dumpall --roles-only --no-role-passwords</code> i <code>pg_dump --schema-only</code>, tj. svih uloga, objekata i privilegija. Isti otisak nakon druge primjene znači da kod nije promijenio ništa. Isti otisak se može koristiti i za drift: ako neko ručno doda privilegiju, otisak se promijeni.</p>
+<div class="out"><div class="hd">izlaz make s6-p3: test privilegija</div><pre>== 1. app (aplikacija): čita i piše svoje tabele
+  app: INSERT INTO narudzbe                  DOZVOLJENO id=1
+  app: SELECT count(*) FROM narudzbe         DOZVOLJENO 1
+== 2. app ne smije brisati redove ni mijenjati strukturu (nije vlasnik)
+  app: DELETE FROM narudzbe                  ODBIJENO   permission denied for table narudzbe
+  app: DROP TABLE narudzbe                   ODBIJENO   must be owner of table narudzbe
+  app: CREATE TABLE u public shemi           ODBIJENO   permission denied for schema public
+== 3. izvjestaj: vidi samo zbirni pogled, ne i kupce (lični podaci)
+  izvjestaj: SELECT v_promet_po_danu         DOZVOLJENO 2026-11-13 1 25.50
+  izvjestaj: SELECT email FROM kupci         ODBIJENO   permission denied for table kupci
+  izvjestaj: INSERT INTO narudzbe            ODBIJENO   permission denied for table narudzbe
+== 4. pg_hba.conf i lozinke: pogrešna baza, pogrešna lozinka, uloga samo za replikaciju
+  app -&gt; baza postgres (nije u pg_hba)       ODBIJENO   pg_hba.conf rejects connection for host "127.0.0.1", user "app", database "postgres"
+  app s pogrešnom lozinkom                   ODBIJENO   password authentication failed for user "app"
+  repl -&gt; baza prodavnica                    ODBIJENO   pg_hba.conf rejects connection for host "127.0.0.1", user "repl", database "prodavnica"</pre></div>
+<div class="note warn"><span class="lbl">Zašto aplikacija nije vlasnik tabela</span>Najčešća postavka u praksi je jedna uloga za sve: aplikacija se spaja kao vlasnik baze, ili čak kao <code>postgres</code>. Tada SQL injection ili greška u kodu može obrisati tabele, a izvještajni alat vidi lične podatke. Odvojene uloge koštaju nekoliko redova koda, a šteta od kompromitovane aplikacije ostaje ograničena na ono što ta uloga smije. <code>ALTER DEFAULT PRIVILEGES</code> rješava drugi čest problem: tabela koju doda nova migracija automatski dobija ista prava, pa aplikacija ne pukne nakon deploya.</div>
+
+<h3>Replikacija</h3>
+<figure>
+<svg viewBox="0 0 720 170" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, sans-serif" font-size="12">
+<defs><marker id="b" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#12212b"/></marker></defs>
+<rect x="10" y="50" width="140" height="56" rx="8" fill="#eef2f6" stroke="#55677a"/>
+<text x="80" y="74" text-anchor="middle" font-weight="700">app</text><text x="80" y="92" text-anchor="middle" fill="#55677a">INSERT, UPDATE</text>
+<rect x="250" y="40" width="190" height="76" rx="8" fill="#e3f3f0" stroke="#0f766e"/>
+<text x="345" y="66" text-anchor="middle" font-weight="700">primarna :5461</text><text x="345" y="84" text-anchor="middle" fill="#55677a">čitanje i pisanje</text><text x="345" y="102" text-anchor="middle" fill="#55677a">WAL + slot replika1</text>
+<rect x="540" y="40" width="170" height="76" rx="8" fill="#e3f3f0" stroke="#0f766e"/>
+<text x="625" y="66" text-anchor="middle" font-weight="700">replika :5462</text><text x="625" y="84" text-anchor="middle" fill="#55677a">samo čitanje</text><text x="625" y="102" text-anchor="middle" fill="#55677a">primjenjuje WAL</text>
+<g stroke="#12212b" fill="none" marker-end="url(#b)"><path d="M150 78H248"/><path d="M440 78H538"/></g>
+<text x="489" y="70" text-anchor="middle" fill="#55677a">WAL (stream)</text>
+<rect x="540" y="130" width="170" height="30" rx="8" fill="#eef2f6" stroke="#55677a"/>
+<text x="625" y="150" text-anchor="middle">izvjestaj: SELECT</text>
+<path d="M625 130V118" stroke="#12212b" marker-end="url(#b)"/>
+</svg>
+<figcaption>Slika 2. Streaming replikacija: primarna šalje WAL replici čim nastane, a replika ga primjenjuje i u isto vrijeme odgovara na upite za čitanje (hot standby). Slot <code>replika1</code> čuva WAL na primarnoj dok ga replika ne preuzme.</figcaption>
+</figure>
+<p>Replika nastaje kopijom cijele instance: <code>pg_basebackup</code> se spoji kao <code>repl</code>, preuzme sve datoteke i WAL nastao za vrijeme kopiranja, a opcija <code>-R</code> zapiše <code>standby.signal</code> i adresu primarne (<code>primary_conninfo</code>), pa se kopija pri pokretanju ponaša kao replika. Opcije <code>-C -S replika1</code> na primarnoj prave <strong>replikacijski slot</strong>: primarna ne briše WAL koji replika još nije preuzela, pa replika može nakratko biti nedostupna bez gubitka veze. Cijena je to što ugašena replika sa slotom puni disk primarne, pa se zaostatak prati.</p>
+<div class="out"><div class="hd">izlaz make s6-p3-replika</div><pre>== 1. Replika: pg_basebackup kopira primarnu instancu i pravi replikacijski slot
+$ pg_basebackup -h 127.0.0.1 -p 5461 -U repl -D .../s6/.lab/pg/replika -R -X stream -C -S replika1
+  -R je napisao standby.signal i primary_conninfo (postgresql.auto.conf):
+    primary_conninfo = 'user=repl password=***** channel_binding=prefer host=127.0.0.1
+  replika radi na 127.0.0.1:5462
+== 2. Primarna instanca vidi repliku (pg_stat_replication)
+ application_name | client_addr |   state   | sync_state |   replay_lag
+------------------+-------------+-----------+------------+-----------------
+ walreceiver      | 127.0.0.1   | streaming | async      | 00:00:00.000059
+  replika: pg_is_in_recovery() = t
+== 3. Upis na primarnoj, čitanje na replici
+  primarna: INSERT jedne narudžbe (app)
+  replika:  narudžbi prije 1, sada 2
+  zaostatak replike: 0 bajta WAL-a
+== 4. Replika je samo za čitanje
+  app: INSERT na replici                     ODBIJENO   cannot execute INSERT in a read-only transaction
+  izvjestaj: SELECT na replici               DOZVOLJENO 2</pre></div>
+<div class="note bg"><span class="lbl">Pozadina: asinhrona i sinhrona replikacija, failover</span>Replika je <code>async</code>: primarna potvrdi transakciju čim je WAL na njenom disku, a replici ga šalje odmah poslije. Ako primarna padne u tom trenutku, posljednje transakcije su izgubljene (RPO veći od nule, obično ispod sekunde). Sa <code>synchronous_standby_names</code> primarna čeka potvrdu replike (<code>sync</code>): nema gubitka, ali svaki upis traje duže, a ako replika padne, upisi stanu. Kad primarna padne, replika se pretvara u primarnu naredbom <code>pg_ctl promote</code> (ili SQL <code>SELECT pg_promote()</code>): to je <strong>failover</strong>. Da to ne radi čovjek u tri ujutro, koristi se Patroni (s etcd-om bira novu primarnu i sprječava da dvije instance istovremeno misle da su primarne, tzv. <em>split brain</em>), a kod RDS-a <code>multi_az = true</code>. Aplikacija se spaja na adresu koja uvijek pokazuje na trenutnu primarnu, što je tema sedmice 7 (HAProxy, keepalived).</div>
+<div class="note"><span class="lbl">MySQL ukratko</span>Ista ideja, drugi nazivi: uloge su korisnici vezani za adresu (<code>CREATE USER 'app'@'10.40.%' IDENTIFIED BY ...</code>, <code>GRANT SELECT, INSERT ON prodavnica.* TO ...</code>), a replika čita binlog primarne (<code>CHANGE REPLICATION SOURCE TO ... SOURCE_AUTO_POSITION=1</code> uz GTID). Logički backup je <code>mysqldump --single-transaction</code>, a fizički Percona XtraBackup ili <code>mysqlbackup</code>.</div>
+</section>
+
+<section class="pb">
+<div class="kicker">6 · Pojam i pozadina</div>
+<h2>Backup politika: RPO, RTO i test restore-a</h2>
+<p>Backup politika odgovara na dva pitanja, a odgovori su poslovna odluka, ne tehnička: <strong>koliko podataka smijemo izgubiti</strong> i <strong>koliko dugo sistem smije biti nedostupan</strong>. Prvo je <strong>RPO</strong> (Recovery Point Objective), drugo <strong>RTO</strong> (Recovery Time Objective). Tek iz njih slijedi tehnika: koliko često backup, gdje se čuva, koliko dugo i kako se vraća.</p>
+<figure>
+<svg viewBox="0 0 720 150" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, sans-serif" font-size="12">
+<defs><marker id="c" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#12212b"/></marker></defs>
+<path d="M20 80H700" stroke="#12212b" marker-end="url(#c)"/>
+<text x="700" y="100" text-anchor="end" fill="#55677a">vrijeme</text>
+<rect x="190" y="62" width="200" height="36" fill="#fdf1e0" stroke="#b45309"/>
+<rect x="390" y="62" width="220" height="36" fill="#e3f3f0" stroke="#0f766e"/>
+<g stroke="#12212b"><path d="M190 40V120"/><path d="M390 40V120"/><path d="M610 40V120"/></g>
+<text x="190" y="32" text-anchor="middle" font-weight="700">zadnji backup</text>
+<text x="390" y="32" text-anchor="middle" font-weight="700">kvar</text>
+<text x="610" y="32" text-anchor="middle" font-weight="700">sistem ponovo radi</text>
+<text x="290" y="85" text-anchor="middle" fill="#b45309" font-weight="700">RPO: izgubljeni podaci</text>
+<text x="500" y="85" text-anchor="middle" fill="#0f766e" font-weight="700">RTO: nedostupnost</text>
+<text x="290" y="140" text-anchor="middle" fill="#55677a" font-size="11">manji: češći backup, arhiva WAL-a</text>
+<text x="500" y="140" text-anchor="middle" fill="#55677a" font-size="11">manji: uvježban, automatski restore</text>
+</svg>
+<figcaption>Slika 3. RPO je razmak između zadnje kopije i kvara: sve upisano u tom razmaku je izgubljeno. RTO je razmak od kvara do ponovnog rada: otkrivanje kvara, nabavka backupa, restore, provjera i preusmjeravanje aplikacije.</figcaption>
+</figure>
+<table class="t">
+<tr><th>Pojam</th><th>Značenje</th></tr>
+<tr><td>Logički backup</td><td><code>pg_dump</code>: SQL ili komprimovani format s naredbama koje ponovo prave objekte i podatke. Prenosiv između verzija i arhitektura, može vratiti jednu tabelu; spor za velike baze i ima RPO jednak razmaku između dumpova.</td></tr>
+<tr><td>Fizički backup</td><td><code>pg_basebackup</code> (ili alati pgBackRest, Barman, WAL-G): kopija datoteka instance. Brz za velike baze, ali vraća samo cijelu instancu, na istu glavnu verziju.</td></tr>
+<tr><td>PITR</td><td>Point-in-time recovery: fizički backup + arhiva svih WAL datoteka nakon njega. Vraća se u bilo koju sekundu, npr. tačno prije pogrešnog <code>DROP TABLE</code>; RPO pada na sekunde.</td></tr>
+<tr><td>Retencija</td><td>Koliko se kopija čuva. Česta šema GFS (grandfather-father-son): dnevne 7 dana, sedmične 4 sedmice, mjesečne 12 mjeseci.</td></tr>
+<tr><td>Pravilo 3-2-1</td><td>Tri kopije podataka, na dvije vrste medija, od kojih je jedna izvan lokacije. Danas se dodaje i jedna kopija koja se ne može izmijeniti (<em>immutable</em>, npr. S3 Object Lock), zbog ransomwarea koji briše i backupe.</td></tr>
+<tr><td>Test restore-a</td><td>Redovno vraćanje backupa u izolovanu okolinu i provjera podataka. Jedini dokaz da backup postoji i jedini način da se izmjeri stvarni RTO.</td></tr>
+</table>
+<div class="note warn"><span class="lbl">Replika i snimak nisu backup</span>Replika štiti od kvara mašine, ali ne i od greške: <code>DROP TABLE</code>, pogrešan <code>UPDATE</code> bez <code>WHERE</code> ili ransomware se na repliku prenesu za milisekunde. Snimak volumena (primjer 1) je dobar dodatak, ali za bazu koja radi daje stanje "kao nakon nestanka struje" i čuva se kod istog pružatelja, često u istom računu, pa ga briše isti napadač. Backup je kopija koja je <em>odvojena</em> od izvora (vremenski, prostorno i po pravima pristupa) i za koju je provjereno da se može vratiti.</div>
+</section>
+
+<section class="pb">
+<div class="kicker">7 · Primjer 4 · s6/p4</div>
+<h2>Backup, retencija, test restore-a i mjerenje RPO/RTO</h2>
+<div class="note bg"><span class="lbl">Pozadina primjera</span>Politika je datoteka u Gitu (<code>politika.env</code>), a <code>backup.sh</code> je izvršava: <code>pg_dump</code> kao uloga <code>backup</code> (samo čitanje), kontrolni zbir SHA-256 uz svaki backup, brisanje starijih od zadnjih <code>ZADRZI</code>, te kopija u bucket iz primjera 2 kao kopija izvan servera. Drugi dio skripte simulira kvar i oporavak i mjeri postignuto u odnosu na ciljeve iz politike.</div>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 11 · s6/p4/politika.env</span></div><pre>BAZA=prodavnica
+ZADRZI=3              # lokalno se čuva zadnjih N backupa (retencija); starije briše backup.sh
+RPO_CILJ_MIN=60       # Recovery Point Objective: najviše 60 min izgubljenih podataka -&gt; backup barem svaki sat
+RTO_CILJ_MIN=15       # Recovery Time Objective: baza mora ponovo raditi najviše 15 min nakon kvara
+S3_BUCKET=ruo-backup  # kopija izvan servera (Garage iz s6/p2), ako radi: pravilo 3-2-1
+S3_PREFIKS=postgres/</pre></div>
+<div class="code long"><div class="hd"><span>bash</span><span>Isječak 12 · s6/p4/backup.sh: backup (izvod)</span></div><pre>ime="$BAZA-$(date +%Y%m%d-%H%M%S).dump"
+# -Fc: komprimovani "custom" format; pg_restore iz njega može vratiti sve ili samo dio (jednu tabelu)
+PGPASSWORD="$(lozinka backup)" pg_dump -h 127.0.0.1 -p 5461 -U backup -Fc -f "$BK/$ime" "$BAZA"
+(cd "$BK" &amp;&amp; sha256sum "$ime" &gt; "$ime.sha256")
+# retencija: zadržati zadnjih ZADRZI, starije obrisati (ls -t: najnoviji prvi)
+ls -1t "$BK"/*.dump | tail -n +$((ZADRZI + 1)) | while read -r star; do rm -f "$star" "$star.sha256"; done
+s3_radi &amp;&amp; s3 put "$S3_BUCKET" "$S3_PREFIKS$ime" "$BK/$ime"      # kopija izvan servera</pre></div>
+<div class="code"><div class="hd"><span>bash</span><span>Isječak 13 · pokretanje</span></div><pre>make s6-p4           # politika + 4 backupa s prometom između njih: retencija i kopija u S3
+make s6-p4-restore   # kvar, test restore-a u izolovanu instancu, oporavak, RPO i RTO
+make s6-p4-clean     # briše backupe</pre></div>
+<div class="out"><div class="hd">izlaz make s6-p4 (skraćeno: backup 1 i 4, popisi)</div><pre>== Backup 1/4 (prije njega: promet od 5 narudžbi)
+$ pg_dump -h 127.0.0.1 -p 5461 -U backup -Fc -f prodavnica-20261113-155807.dump prodavnica
+  prodavnica-20261113-155807.dump  8.0K  narudžbi: 7  sha256: 33d02d718be9a09b...
+  kopija izvan servera: s3://ruo-backup/postgres/prodavnica-20261113-155807.dump
+...
+== Backup 4/4 (prije njega: promet od 5 narudžbi)
+$ pg_dump -h 127.0.0.1 -p 5461 -U backup -Fc -f prodavnica-20261113-155812.dump prodavnica
+  prodavnica-20261113-155812.dump  8.0K  narudžbi: 22  sha256: 5bbc10be7bc1b255...
+  retencija (ZADRZI=3): obrisan prodavnica-20261113-155807.dump
+  kopija izvan servera: s3://ruo-backup/postgres/prodavnica-20261113-155812.dump
+== Lokalni backupi (~/RuO-2026-27/s6/.lab/backup)
+  prodavnica-20261113-155812.dump  8.0K
+  prodavnica-20261113-155810.dump  8.0K
+  prodavnica-20261113-155808.dump  8.0K
+== Kopije u S3 (s3://ruo-backup/postgres/)
+  2026-11-13 14:58:07      6683 B  postgres/prodavnica-20261113-155807.dump
+  2026-11-13 14:58:07        98 B  postgres/prodavnica-20261113-155807.dump.sha256
+  2026-11-13 14:58:09      6718 B  postgres/prodavnica-20261113-155808.dump
+  ...
+  2026-11-13 14:58:12      6791 B  postgres/prodavnica-20261113-155812.dump
+  2026-11-13 14:58:12        98 B  postgres/prodavnica-20261113-155812.dump.sha256</pre></div>
+<p>Lokalno ostaju tri backupa, a u bucketu sva četiri: retencija u <code>backup.sh</code> važi samo za lokalni disk. Kopija izvan servera ima vlastitu, dužu retenciju, koju u oblaku radi pravilo životnog ciklusa bucketa (npr. brisanje objekata pod <code>postgres/</code> starijih od 90 dana), a ne skripta na serveru. To je namjerno: ključ kojim server šalje backupe u praksi smije upisivati, ali ne i brisati (ili bucket ima Object Lock), pa kompromitovan server ne može uništiti stare kopije.</p>
+<div class="out"><div class="hd">izlaz make s6-p4-restore</div><pre>== 1. Stanje prije kvara: zadnji backup i promet nakon njega
+  zadnji backup: prodavnica-20261113-154716.dump
+  primarna: 21 narudžbi
+  + 7 novih narudžbi NAKON backupa -&gt; primarna: 28
+== 2. Kvar: ljudska greška, DROP TABLE na primarnoj instanci
+$ psql -c 'DROP TABLE prodaja.narudzbe CASCADE'
+  primarna: nema tabele
+  replika:  nema tabele   &lt;- replika je odmah ponovila grešku: replikacija NIJE backup
+== 3. Test restore-a u izolovanu instancu (127.0.0.1:5463): da li se backup uopšte može vratiti?
+$ sha256sum -c prodavnica-20261113-154716.dump.sha256
+  prodavnica-20261113-154716.dump: OK
+  initdb + start: prazna instanca
+  uloge nisu u pg_dump-u, pa se prvo primjenjuje kod iz s6/p3:
+  psql -f sql/01-uloge.sql
+$ pg_restore -C -d postgres prodavnica-20261113-154716.dump
+  provjera: narudžbi 21; izvjestaj vidi promet: 21
+  test restore-a trajao: 0.7 s
+== 4. Oporavak primarne instance iz istog backupa
+$ dropdb --force prodavnica &amp;&amp; pg_restore -C -d postgres prodavnica-20261113-154716.dump
+  primarna: 21 narudžbi
+  replika:  21 narudžbi (replika prati primarnu i kod oporavka)
+== 5. RPO i RTO: šta smo izgubili i koliko je trajalo
+  izgubljeno: 7 narudžbi = sve upisano nakon zadnjeg backupa
+  RPO (od zadnjeg backupa do kvara):       1 s   cilj: &lt;= 3600 s (60 min)
+  RTO (od kvara do rada baze):           1.6 s   cilj: &lt;= 900 s (15 min)
+  od toga test restore-a:                0.7 s</pre></div>
+<p>Najvažnija lekcija je u koraku 3: <code>pg_dump</code> čuva jednu bazu, ali <strong>ne i uloge</strong>, jer su one globalne za cijelu instancu. Restore u praznu instancu bez uloga <code>vlasnik</code>, <code>app</code> i <code>izvjestaj</code> javlja greške za svaki <code>OWNER</code> i <code>GRANT</code>, a aplikacija se poslije ne može spojiti. Ovdje ih vraća ista datoteka iz primjera 3, pa je kod za uloge dio plana oporavka, a ne samo udobnost. Provjera nakon restore-a zato ne broji samo redove nego se spaja i kao <code>izvjestaj</code>, tj. provjerava i prava.</p>
+<p>Brojevi u labu su sekunde jer je baza mala i sve je na istom računaru. Na produkciji RTO čine i otkrivanje kvara, odluka da se radi restore, preuzimanje backupa iz udaljenog storagea (nekoliko stotina GB traje), sam restore s izgradnjom indeksa i preusmjeravanje aplikacije. Zato se test restore-a radi redovno, automatski i na stvarnoj veličini baze, a izmjereno vrijeme se upoređuje s ciljem iz politike: ako ga premašuje, politika se ne ispunjava bez obzira na to što backupi "postoje".</p>
+<div class="code"><div class="hd"><span>postgresql.conf</span><span>Isječak 14 · PITR: kontinuirano arhiviranje WAL-a (za usporedbu, nije u labu)</span></div><pre>archive_mode    = on
+archive_command = 'test ! -f /arhiva/wal/%f &amp;&amp; cp %p /arhiva/wal/%f'   # u praksi: pgBackRest ili WAL-G u S3
+# restore u trenutak prije greške: fizički backup + WAL do zadanog vremena
+restore_command      = 'cp /arhiva/wal/%f %p'
+recovery_target_time = '2026-11-20 18:42:00+01'</pre></div>
+<div class="note"><span class="lbl">Raspored i nadzor</span>Politika "barem svaki sat" znači i da nešto pokreće backup svaki sat: <code>cron</code> ili systemd timer (Ansible moduli <code>cron</code> i <code>systemd_service</code>), Kubernetes CronJob ili usluga pružatelja. Backup koji tiho prestane raditi je najgori slučaj, jer se otkrije tek kad zatreba. Zato se uz raspored prati i starost zadnjeg uspješnog backupa: alarm kad pređe RPO cilj, npr. metrika "vrijeme zadnjeg backupa" u Prometheusu ili jednostavna provjera datuma objekta u bucketu.</div>
+</section>
+
+<section class="pb">
+<div class="kicker">Sažetak i provjera znanja</div>
+<h2>Pregled naredbi, pitanja i zadaci</h2>
+<table class="t">
+<tr><th>Cilj</th><th>Šta radi</th><th>Mijenja sistem?</th></tr>
+<tr><td><code>make s6-p1</code> / <code>s6-p1-lab</code></td><td>pregled diskova / volumen: mkfs, mount, detach/attach, proširenje</td><td>ne / da (loop uređaj, sudo)</td></tr>
+<tr><td><code>make s6-p2</code></td><td>Garage: konfiguracija, layout, bucket i ključ, S3 klijent</td><td>lokalni proces (127.0.0.1:3900)</td></tr>
+<tr><td><code>make s6-p3</code> / <code>s6-p3-replika</code></td><td>PostgreSQL: SQL kod 2x i test privilegija / replika i test replikacije</td><td>lokalni procesi (127.0.0.1:5461, 5462)</td></tr>
+<tr><td><code>make s6-p4</code> / <code>s6-p4-restore</code></td><td>backupi s retencijom i kopijom u S3 / kvar, test restore-a, oporavak, RPO i RTO</td><td>lokalne datoteke i baza laba</td></tr>
+<tr><td><code>make s6-clean</code></td><td>briše sve iz sedmice 6 (procesi, podaci, backupi, volumen)</td><td>uklanja</td></tr>
+</table>
+<table class="t">
+<tr><th>Pitanje</th><th>Odgovor</th></tr>
+<tr><td>Koju vrstu pohrane izabrati za bazu podataka, a koju za backupe?</td><td>Bazu na block storage (najmanje kašnjenje, izmjene na mjestu); backupe u object storage (jeftin, neograničen, dostupan s bilo koje lokacije, podržava retenciju i nepromjenjivost).</td></tr>
+<tr><td>Zašto se blok volumen ne montira na dvije mašine istovremeno?</td><td>Datotečni sistem pretpostavlja da je jedini pisac; dva nezavisna pisca kvare metapodatke. Za dijeljenje služi file storage (NFS, SMB).</td></tr>
+<tr><td>Disk je povećan u oblaku, a <code>df</code> pokazuje staru veličinu. Zašto?</td><td>Povećan je samo blok uređaj; datotečni sistem treba proširiti u OS-u (<code>resize2fs</code>, <code>xfs_growfs</code>), a ako je na particiji, prvo i particiju (<code>growpart</code>).</td></tr>
+<tr><td>Šta je "direktorij" u S3?</td><td>Ne postoji: kosa crta je dio ključa, a "direktorij" je zajednički prefiks ključeva koji API vraća kao <code>CommonPrefixes</code>.</td></tr>
+<tr><td>Čemu služi presigned URL?</td><td>Privremeno daje pristup jednom objektu za jednu operaciju bez ključa i bez javnog bucketa; potpis i rok važenja su u samom URL-u.</td></tr>
+<tr><td>Kako je SQL kod za uloge idempotentan kad nema <code>CREATE ROLE IF NOT EXISTS</code>?</td><td><code>SELECT</code> vrati naredbu samo ako uloga ne postoji, a <code>\gexec</code> je izvrši; <code>ALTER ROLE</code> i <code>GRANT</code> se mogu ponavljati bez promjene stanja.</td></tr>
+<tr><td>Zašto aplikacijska uloga nije vlasnik tabela?</td><td>Vlasnik može brisati i mijenjati strukturu; kompromitovana aplikacija s ograničenom ulogom ne može obrisati tabele.</td></tr>
+<tr><td>Šta radi replikacijski slot i koji je njegov rizik?</td><td>Primarna čuva WAL dok ga replika ne preuzme, pa replika može kasniti bez prekida replikacije; ugašena replika sa slotom puni disk primarne.</td></tr>
+<tr><td>Zašto replika nije backup?</td><td>Ponavlja svaku izmjenu, i pogrešnu: <code>DROP TABLE</code> na primarnoj nestaje i na replici za milisekunde.</td></tr>
+<tr><td>Zašto restore u praznu instancu traži kod iz primjera 3?</td><td><code>pg_dump</code> ne sadrži uloge (globalne su za instancu); bez njih ne prolaze <code>OWNER</code> i <code>GRANT</code>, a aplikacija se ne može spojiti.</td></tr>
+<tr><td>Kako se smanjuje RPO, a kako RTO?</td><td>RPO: češći backup, arhiva WAL-a (PITR), replika za kvar mašine. RTO: automatizovan i uvježban restore, manji i paralelni restore, replika spremna za promociju.</td></tr>
+</table>
+<h3>Zadaci za samostalni rad</h3>
+<ol>
+<li>U <code>s6-p1-lab</code> umjesto ext4 napraviti XFS (<code>mkfs.xfs</code>), proširiti ga (<code>xfs_growfs /mnt/ruo6</code>) i pokušati smanjiti. Opisati razliku.</li>
+<li>Na Linux VM-u iz sedmice 2 postaviti NFS server (<code>nfs-kernel-server</code>, <code>/etc/exports</code>) Ansible rolom i montirati izvoz s računara. Pokazati da datoteku napisanu s jedne strane odmah vidi druga, i šta mijenja <code>root_squash</code>.</li>
+<li>U <code>s3.py</code> dodati naredbu koja ispisuje ukupnu veličinu svih objekata pod zadanim prefiksom (paginacija: <code>list_objects_v2</code> vraća najviše 1000 ključeva) i napraviti drugi ključ koji smije samo čitati bucket (<code>garage bucket allow --read</code>). Pokazati da upis s njim pada.</li>
+<li>U <code>sql/</code> dodati migraciju <code>05-placanja.sql</code> s tabelom <code>prodaja.placanja</code>. Bez izmjene <code>04-privilegije.sql</code> pokazati da <code>app</code> u nju smije pisati, i objasniti zašto. Predati otisak stanja nakon dvije primjene.</li>
+<li>Dodati ulogu <code>analiticar</code> koja smije čitati <code>prodaja.narudzbe</code>, ali samo kolone <code>iznos</code> i <code>vrijeme</code> (privilegije na nivou kolone), i to samo na replici (savjet: <code>pg_hba.conf</code> i drugi port). Testom pokazati šta smije, a šta ne.</li>
+<li>Promijeniti politiku na <code>ZADRZI=5</code> i <code>RPO_CILJ_MIN=1</code>, napraviti cron red koji ispunjava taj RPO i pokrenuti <code>make s6-p4-restore</code> nakon 3 minute bez backupa. Predati izlaz i objasniti zašto je politika prekršena.</li>
+<li>Uključiti arhiviranje WAL-a na primarnoj instanci (isječak 14), napraviti <code>pg_basebackup</code>, upisati nekoliko narudžbi, zabilježiti vrijeme, obrisati tabelu i vratiti instancu u trenutak prije brisanja. Uporediti izgubljene podatke s primjerom 4.</li>
+</ol>
+<div class="note "><span class="lbl">Projektni zadatak</span>Projekat traži da podaci aplikacije imaju vlasnika i plan: baza s ulogama i privilegijama iz koda (ne superuser za aplikaciju), backup po napisanoj politici s kopijom u object storage, te dokumentovan i ponovljiv test restore-a s izmjerenim RPO i RTO. Na usmenoj odbrani se očekuje da se restore pokaže uživo.</div>
+<div class="note "><span class="lbl">Sljedeća sedmica</span>Podaci su sigurni, ali aplikacija i dalje radi na jednoj adresi. Sedmica 7 uvodi load balancing i visoku dostupnost: HAProxy i Nginx s health checkovima, keepalived/VRRP za plutajuću adresu, auto-scaling, blue/green i canary deployment, te predstavljanje i predaju projektnog zadatka.</div>
+</section>
+
+<footer>Računarstvo u oblaku · II ciklus, III semestar · akademska 2026/27 · Sedmica 6: Pohrana i baze podataka kao kod</footer>
+</body></html>

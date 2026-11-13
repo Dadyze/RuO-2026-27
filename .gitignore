@@ -25,3 +25,6 @@ _profile/
 # sedmica 5: generisani ključevi i stanje
 s5/p4/kljucevi/
 s5/p2/.terraform.lock.hcl
+
+# sedmica 6: podaci instanci (Garage, PostgreSQL), lozinke, backupi
+s6/.lab/
