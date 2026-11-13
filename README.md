@@ -210,6 +210,7 @@ Izuzeci koji se mogu bezbrijetno izvršiti jer rade lokalno i ne koštaju ništa
 | `make s3-p3-apply` | kreira VM i konfiguriše je (`deploy.sh`) | da (KVM) |
 | `make s3-p4` | Dockerfile + Compose: build, up, brojač posjeta | lokalni kontejneri |
 | `make s3-p4-persist` / `s3-p4-clean` | podaci u volumenu / čišćenje | lokalni kontejneri |
+| `make s3-p4-r` / `s3-p4-r-clean` | rješenje u `s3/p4-rjesenje`: nginx reverse proxy ispred `web` (port 8080 samo na nginxu) / čišćenje | lokalni kontejneri |
 | `make s3-p5` | Kubernetes manifest, dry-run | ne |
 | `make s3-p5-up` / `s3-p5-heal` / `s3-p5-clean` | kind klaster, samoizlječenje, brisanje | lokalni kontejneri |
 | `make s4-p1` / `s4-p1-lab` | osnove mreže: pregled (samo čita) / vježba dodaj-promijeni-obriši adresu, sučelje i rutu (`PAUZA=1` čeka Enter) | ne / da (namespace-ovi, sudo) |
