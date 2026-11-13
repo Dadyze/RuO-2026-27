@@ -1,0 +1,95 @@
+# Sistem iz s3/p4 (web brojač + Redis) kao Kubernetes manifest.
+# Slika ruo/brojac:1.0 se gradi lokalno (s3/p4/app) i učitava u kind:
+#   kind load docker-image ruo/brojac:1.0 --name ruo
+# Sve je u namespace-u brojac, da se ne miješa s primjerom web.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: brojac
+---
+# zamjena za volumen redisdata iz compose.yaml: podaci prežive brisanje Poda
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redisdata
+  namespace: brojac
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 1Gi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: brojac
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["redis-server", "--appendonly", "yes"]
+          ports: [{ containerPort: 6379 }]
+          readinessProbe:                       # isto kao healthcheck u compose.yaml
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: redisdata }
+---
+# ime Servisa "redis" je DNS ime koje web koristi (REDIS_HOST=redis)
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: brojac
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379, targetPort: 6379 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: brojac
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: web }
+  template:
+    metadata:
+      labels: { app: web }
+    spec:
+      containers:
+        - name: web
+          image: ruo/brojac:1.0
+          imagePullPolicy: IfNotPresent         # slika je učitana u kind, ne povlači se s registra
+          env:
+            - { name: REDIS_HOST, value: redis }
+          ports: [{ containerPort: 8000 }]
+          livenessProbe:                        # /health: proces radi
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+          readinessProbe:                       # /ready: Redis je dostupan, Pod prima saobraćaj
+            httpGet: { path: /ready, port: 8000 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: brojac
+spec:
+  selector: { app: web }
+  ports: [{ port: 80, targetPort: 8000 }]
