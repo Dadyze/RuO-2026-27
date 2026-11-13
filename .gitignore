@@ -8,6 +8,9 @@ tfplan
 crash.log
 # lokalno generisano
 s2/p1/pozdrav.txt
+s2/p1/prva.txt
+s2/p1/druga.txt
+s2/p1/treca.txt
 s3/p3/inventory.ini
 # Packer slike
 s2/p4/output/
