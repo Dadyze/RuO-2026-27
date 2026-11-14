@@ -128,7 +128,7 @@ s3-p3: s3-p2-vault ssh-key ## Terraform + Ansible: PLAN i syntax-check (bez krei
 > cd s3/p3 && terraform init -input=false && terraform validate && terraform plan -out=tfplan
 > cd s3/p3 && ansible-playbook -i localhost, site.yml --syntax-check
 s3-p3-apply: s3-p3 ## [opcionalno] kreira VM i konfiguriše je (deploy.sh)
-> cd s3/p3 && bash deploy.sh && curl -s http://$$(terraform output -raw ip)
+> cd s3/p3 && bash deploy.sh && for ip in $$(terraform output -json ip | python3 -c "import json,sys; print(*json.load(sys.stdin).values())"); do curl -s http://$$ip; done
 s3-p3-clean: ## uklanja VM, inventory i state
 > cd s3/p3 && { terraform destroy -auto-approve || true; } && rm -rf .terraform terraform.tfstate* tfplan inventory.ini
 
@@ -161,7 +161,7 @@ s3-p4-r-clean: ## [rješenje] čisti s3/p4-rjesenje (down -v)
 
 s3-p5: ## Kubernetes: dry-run manifesta (bez klastera)
 > @$(call need,kubectl)
-> kubectl apply --dry-run=client --validate=false -f s3/p5/web.yaml
+> @if kubectl version >/dev/null 2>&1; then kubectl apply --dry-run=client --validate=false -f s3/p5/web.yaml; else python3 -c "import yaml,sys; list(yaml.safe_load_all(sys.stdin))" < s3/p5/web.yaml && echo "YAML ispravan (nema klastera)"; fi
 s3-p5-up: ## [opcionalno] kind klaster + apply + curl
 > @$(call need,kind)
 > @$(call need,kubectl)
@@ -172,7 +172,7 @@ s3-p5-up: ## [opcionalno] kind klaster + apply + curl
 > kubectl get pods -o wide
 > kubectl port-forward svc/web 8081:80 >/dev/null & PF=$$!; sleep 2; curl -s localhost:8081; kill $$PF
 s3-p5-heal: ## briše jedan Pod: Deployment ga vraća
-> kubectl delete pod $$(kubectl get pods -o name | head -1)
+> kubectl delete $$(kubectl get pods -l app=web -o name | head -1)
 > kubectl get pods
 s3-p5-clean: ## briše kind klaster
 > kind delete cluster --name ruo

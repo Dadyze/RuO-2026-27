@@ -15,11 +15,13 @@ provider "libvirt" {
   uri = "qemu:///system"
 }
 
-variable "vm_name" {
-  type    = string
-  default = "web1"
+# skup imena mašina: za svako ime nastaju disk, cloud-init disk i domena (for_each)
+variable "vms" {
+  type    = set(string)
+  default = ["web1", "web2"]
 }
 
+# bazna slika se preuzima jednom, a disk svake mašine je njen "copy-on-write" potomak
 resource "libvirt_volume" "base" {
   name   = "ubuntu-noble-base.qcow2"
   pool   = "default"
@@ -28,7 +30,8 @@ resource "libvirt_volume" "base" {
 }
 
 resource "libvirt_volume" "disk" {
-  name           = "${var.vm_name}.qcow2"
+  for_each       = var.vms
+  name           = "${each.key}.qcow2"
   pool           = "default"
   base_volume_id = libvirt_volume.base.id
   size           = 10 * 1024 * 1024 * 1024
@@ -36,21 +39,23 @@ resource "libvirt_volume" "disk" {
 
 # cloud-init samo za bootstrap: korisnik i SSH ključ
 resource "libvirt_cloudinit_disk" "init" {
-  name = "${var.vm_name}-init.iso"
-  pool = "default"
+  for_each = var.vms
+  name     = "${each.key}-init.iso"
+  pool     = "default"
   user_data = templatefile("${path.module}/cloud-init.tftpl", {
-    hostname = var.vm_name
+    hostname = each.key
     ssh_key  = trimspace(file(pathexpand("~/.ssh/id_ed25519.pub")))
   })
 }
 
 resource "libvirt_domain" "vm" {
-  name      = var.vm_name
+  for_each  = var.vms
+  name      = each.key
   memory    = 1024
   vcpu      = 1
-  cloudinit = libvirt_cloudinit_disk.init.id
+  cloudinit = libvirt_cloudinit_disk.init[each.key].id
 
-  disk { volume_id = libvirt_volume.disk.id }
+  disk { volume_id = libvirt_volume.disk[each.key].id }
 
   network_interface {
     network_name   = "default"
@@ -64,15 +69,14 @@ resource "libvirt_domain" "vm" {
   }
 }
 
-# inventory kao resurs: Ansible čita adresu iz Terraformovog izlaza
+# inventory kao resurs: Ansible čita adrese iz Terraformovog izlaza
+# jedna linija po mašini u grupi [web], sastavljena petljom nad svim domenama
 resource "local_file" "inventory" {
   filename = "${path.module}/inventory.ini"
-  content  = <<-EOT
-    [web]
-    ${var.vm_name} ansible_host=${libvirt_domain.vm.network_interface[0].addresses[0]} ansible_user=student
-  EOT
+  content  = "${join("\n", concat(["[web]"], [for ime, vm in libvirt_domain.vm : "${ime} ansible_host=${vm.network_interface[0].addresses[0]} ansible_user=student"]))}\n"
 }
 
+# adrese svih mašina: { web1 = "...", web2 = "..." }
 output "ip" {
-  value = libvirt_domain.vm.network_interface[0].addresses[0]
+  value = { for ime, vm in libvirt_domain.vm : ime => vm.network_interface[0].addresses[0] }
 }
