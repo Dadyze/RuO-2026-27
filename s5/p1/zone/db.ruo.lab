@@ -3,7 +3,7 @@
 $TTL 300
 $ORIGIN ruo.lab.
 @         IN SOA  ns1.ruo.lab. hostmaster.ruo.lab. (
-                  2026111301 ; serial
+                  2026111401 ; serial
                   3600       ; refresh: koliko često sekundarni provjerava serial
                   600        ; retry: ponovni pokušaj ako primarni ne odgovara
                   1209600    ; expire: sekundarni prestaje odgovarati ako 14 dana nema primarnog
@@ -19,6 +19,7 @@ ns2       IN A      10.50.0.54
 admin     IN A      10.50.0.1
 mail      IN A      10.50.0.25
 sftp      IN A      10.50.0.22
+git       IN A      10.50.0.30
 imap      IN CNAME  mail
 smtp      IN CNAME  mail
 
