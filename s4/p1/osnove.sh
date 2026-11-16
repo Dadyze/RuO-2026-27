@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # s4/p1: osnovni mrežni zadaci naredbom ip: pregled, dodavanje, mijenjanje i brisanje adresa, sučelja i ruta.
-# Sve se radi u dva izolirana namespace-a (ruo-n1, ruo-n2) spojena veth kablom, pa mreža računara ostaje netaknuta.
+# Sve se radi u tri izolirana namespace-a (ruo-n1, ruo-n2, ruo-n3) spojena veth kablovima (n1-n2, n2-n3), pa mreža računara ostaje netaknuta.
 #
 #   ./osnove.sh pregled            samo čita stanje mreže računara (ne traži root)
 #   ./osnove.sh vjezba             cijela vježba korak po korak (root)    PAUZA=1: čeka Enter nakon svakog koraka
@@ -10,7 +10,7 @@ export PATH="$PATH:/usr/sbin:/sbin"
 PAUZA="${PAUZA:-0}"
 
 korak() { printf '\n\033[1;36m== %s\033[0m\n' "$*"; }
-# kmd [ns] naredba...: ispiše naredbu i izvrši je (u namespace-u ako je prvi argument ruo-n1 ili ruo-n2)
+# kmd [ns] naredba...: ispiše naredbu i izvrši je (u namespace-u ako je prvi argument ruo-n1, ruo-n2 ili ruo-n3)
 kmd() {
   if [[ "$1" == ruo-n* ]]; then local ns="$1"; shift; echo "[$ns]\$ $*"; ip netns exec "$ns" "$@"
   else echo "\$ $*"; "$@"; fi
@@ -32,8 +32,9 @@ pregled() {
 vjezba() {
   [ "$(id -u)" = 0 ] || { echo "Treba root: sudo $0 vjezba"; exit 1; }
   down >/dev/null 2>&1
-  ip netns add ruo-n1; ip netns add ruo-n2
+  ip netns add ruo-n1; ip netns add ruo-n2; ip netns add ruo-n3
   ip link add eth0 netns ruo-n1 type veth peer name eth0 netns ruo-n2
+  ip link add eth1 netns ruo-n2 type veth peer name eth0 netns ruo-n3
 
   korak "1. Početno stanje: sučelje postoji, ali je isključeno i nema adresu"
   kmd ruo-n1 ip -br link; kmd ruo-n1 ip -br addr; pauza
@@ -81,10 +82,23 @@ vjezba() {
   echo "(prazna tabela usmjeravanja: rute iz adrese nestaju zajedno s njom)"; ping1 ruo-n1 10.60.0.22; pauza
 
   korak "9. Statistika sučelja (ip -s link): brojači paketa i grešaka, prvo mjesto za dijagnostiku"
-  kmd ruo-n2 ip -s link show eth0
+  kmd ruo-n2 ip -s link show eth0; pauza
+
+  korak "10. Treći namespace: n1 doseže n3 (10.80.0.3) preko n2; n2 prosljeđuje pakete samo uz ip_forward=1"
+  kmd ruo-n2 ip link set eth1 up; kmd ruo-n3 ip link set lo up; kmd ruo-n3 ip link set eth0 up
+  kmd ruo-n1 ip addr add 10.60.0.1/24 dev eth0     # flush iz koraka 8 je obrisao adresu
+  kmd ruo-n2 ip addr add 10.80.0.2/24 dev eth1
+  kmd ruo-n3 ip addr add 10.80.0.3/24 dev eth0
+  kmd ruo-n1 ip route add 10.80.0.0/24 via 10.60.0.22
+  kmd ruo-n3 ip route add 10.60.0.0/24 via 10.80.0.2   # povratna ruta, inače n3 ne zna kome odgovoriti
+  kmd ruo-n2 sysctl -w net.ipv4.ip_forward=0
+  ping1 ruo-n1 10.80.0.3
+  echo "(ne prolazi: paket za 10.80.0.3 stiže na n2, ali odredište nije n2, a kernel bez ip_forward=1 takve pakete odbacuje umjesto da ih proslijedi na eth1)"
+  kmd ruo-n2 sysctl -w net.ipv4.ip_forward=1
+  ping1 ruo-n1 10.80.0.3
   echo; echo "Promjene su privremene: nestaju s namespace-om (a na pravoj mašini s restartom). Trajna konfiguracija: netplan (s4/p1/netplan-primjer.yaml)."
 }
 
-down() { ip netns del ruo-n1 2>/dev/null && echo "obrisan ruo-n1" || true; ip netns del ruo-n2 2>/dev/null && echo "obrisan ruo-n2" || true; }
+down() { ip netns del ruo-n1 2>/dev/null && echo "obrisan ruo-n1" || true; ip netns del ruo-n2 2>/dev/null && echo "obrisan ruo-n2" || true; ip netns del ruo-n3 2>/dev/null && echo "obrisan ruo-n3" || true; }
 
 case "${1:-}" in pregled) pregled ;; vjezba) vjezba ;; down) down ;; *) echo "Upotreba: $0 pregled | vjezba | down"; exit 1 ;; esac
