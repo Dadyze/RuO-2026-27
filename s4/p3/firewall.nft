@@ -12,6 +12,7 @@ delete table inet ruo
 
 table inet ruo {
   set web_ports { type inet_service; elements = { 80, 443 } }
+  set app_ports { type inet_service; elements = { 8080, 9090 } }
 
   # promet KROZ ruter (između segmenata): zadano je zabrana, dozvole se nabrajaju
   chain forward {
@@ -21,7 +22,7 @@ table inet ruo {
     ct state invalid drop
 
     iifname $uplink ip daddr $web tcp dport @web_ports accept   # internet -> web: samo 80/443
-    ip saddr $web ip daddr $app tcp dport 8080 accept           # web -> app: samo aplikacijski port
+    ip saddr $web ip daddr $app tcp dport @app_ports accept     # web -> app: aplikacijski portovi (8080, 9090)
     ip saddr $app ip daddr $db  tcp dport 5432 accept           # app -> db: samo baza
     ip saddr { $web, $app } oifname $uplink accept              # izlaz prema internetu: web i app, ne db
 

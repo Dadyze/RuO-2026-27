@@ -19,6 +19,7 @@ trap 'kill "${PIDS[@]}" 2>/dev/null' EXIT
 
 slusaj ruo-web 10.40.1.2 80
 slusaj ruo-app 10.40.2.2 8080;  slusaj ruo-app 10.40.2.2 22
+slusaj ruo-app 10.40.2.2 9090;  slusaj ruo-app 10.40.2.2 9091
 slusaj ruo-db  10.40.3.2 5432;  slusaj ruo-db  10.40.3.2 22
 slusaj host    10.40.0.1 9000
 sleep 1
@@ -34,8 +35,11 @@ proba() { # izvor  odredište-ip  port  očekivano
 
 proba host 10.40.1.2 80   dozvoljeno   # internet -> web
 proba host 10.40.2.2 8080 blokirano    # internet -> app
+proba host 10.40.2.2 9090 blokirano    # internet -> app: direktan pristup blokiran
 proba host 10.40.3.2 5432 blokirano    # internet -> db
 proba web  10.40.2.2 8080 dozvoljeno   # web -> app (aplikacijski port)
+proba web  10.40.2.2 9090 dozvoljeno   # web -> app (novi dozvoljeni port 9090)
+proba web  10.40.2.2 9091 blokirano    # web -> app (nedozvoljeni port 9091)
 proba web  10.40.2.2 22   blokirano    # web -> app (SSH)
 proba web  10.40.3.2 5432 blokirano    # web -> db (preskakanje sloja)
 proba app  10.40.3.2 5432 dozvoljeno   # app -> db
