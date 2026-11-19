@@ -67,9 +67,13 @@ test_() {
   ok_ili_greska "app: INSERT INTO narudzbe" psql_kao app "$PG_PRIMARNI" $A \
     "INSERT INTO prodaja.narudzbe (kupac_id, iznos) SELECT id, 25.50 FROM prodaja.kupci WHERE email='amra@ruo.lab' RETURNING 'id=' || id"
   ok_ili_greska "app: SELECT count(*) FROM narudzbe" psql_kao app "$PG_PRIMARNI" $A "SELECT count(*) FROM prodaja.narudzbe"
+  ok_ili_greska "app: INSERT INTO placanja (default privilegije)" psql_kao app "$PG_PRIMARNI" $A \
+    "INSERT INTO prodaja.placanja (narudzba_id, iznos, metoda) SELECT id, 49.99, 'kartica' FROM prodaja.narudzbe LIMIT 1 RETURNING 'id=' || id"
+  ok_ili_greska "app: SELECT count(*) FROM placanja" psql_kao app "$PG_PRIMARNI" $A "SELECT count(*) FROM prodaja.placanja"
   korak "2. app ne smije brisati redove ni mijenjati strukturu (nije vlasnik)"
   ok_ili_greska "app: DELETE FROM narudzbe" psql_kao app "$PG_PRIMARNI" $A "DELETE FROM prodaja.narudzbe"
   ok_ili_greska "app: DROP TABLE narudzbe" psql_kao app "$PG_PRIMARNI" $A "DROP TABLE prodaja.narudzbe"
+  ok_ili_greska "app: DROP TABLE placanja" psql_kao app "$PG_PRIMARNI" $A "DROP TABLE prodaja.placanja"
   ok_ili_greska "app: CREATE TABLE u public shemi" psql_kao app "$PG_PRIMARNI" $A "CREATE TABLE public.x (a int)"
   korak "3. izvjestaj: vidi samo zbirni pogled, ne i kupce (lični podaci)"
   ok_ili_greska "izvjestaj: SELECT v_promet_po_danu" psql_kao izvjestaj "$PG_PRIMARNI" $A "SELECT dan || ' ' || narudzbi || ' ' || promet FROM prodaja.v_promet_po_danu"
