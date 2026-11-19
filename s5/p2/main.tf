@@ -25,9 +25,10 @@ variable "zona" {
 variable "servisi" {
   type = map(list(string))
   default = {
-    web = ["10.40.1.10", "10.40.1.11"]
-    app = ["10.40.2.10"]
-    db  = ["10.40.3.10"]
+    web   = ["10.40.1.10", "10.40.1.11"]
+    app   = ["10.40.2.10"]
+    db    = ["10.40.3.10"]
+    cache = ["10.40.4.10"]
   }
 }
 
@@ -61,6 +62,22 @@ resource "dns_txt_record_set" "vlasnik" {
   ttl  = 300
 }
 
+resource "dns_srv_record_set" "cache_srv" {
+  zone = var.zona
+  name = "_redis._tcp"
+  srv {
+    priority = 10
+    weight   = 10
+    port     = 6379
+    target   = "cache.${var.zona}"
+  }
+  ttl = 300
+}
+
 output "imena" {
   value = concat([for k, _ in dns_a_record_set.servis : "${k}.${var.zona}"], ["www.${var.zona}"])
+}
+
+output "srv" {
+  value = "_redis._tcp.${var.zona} -> cache.${var.zona}:6379"
 }
