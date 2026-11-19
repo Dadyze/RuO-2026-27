@@ -8,6 +8,7 @@ Pristup se čita iz okruženja (objekti.sh ga piše u s6/.lab/garage/s3.env):
   s3.py put  BUCKET KLJUČ DATOTEKA  upload
   s3.py get  BUCKET KLJUČ DATOTEKA  download
   s3.py ls   BUCKET [PREFIKS]       popis objekata
+  s3.py velicina BUCKET [PREFIKS]   broj i ukupna veličina objekata pod prefiksom
   s3.py rm   BUCKET KLJUČ           brisanje
 """
 import hashlib
@@ -17,6 +18,7 @@ import urllib.error
 import urllib.request
 
 import boto3
+from boto3.exceptions import S3UploadFailedError
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -45,6 +47,26 @@ def ls(s3, bucket, prefiks=""):
         print("  (prazno)")
 
 
+def velicina(s3, bucket, prefiks=""):
+    """Zbir veličina objekata pod prefiksom. list_objects_v2 vraća najviše 1000 ključeva po odgovoru,
+    pa se popis čita stranicu po stranicu: dok je IsTruncated istina, NextContinuationToken traži sljedeću."""
+    broj = ukupno = stranica = 0
+    token = None
+    while True:
+        zahtjev = {"Bucket": bucket, "Prefix": prefiks}
+        if token:
+            zahtjev["ContinuationToken"] = token
+        r = s3.list_objects_v2(**zahtjev)
+        stranica += 1
+        for o in r.get("Contents", []):
+            broj += 1
+            ukupno += o["Size"]
+        if not r.get("IsTruncated"):
+            break
+        token = r["NextContinuationToken"]
+    print(f"  objekata: {broj}, ukupno: {ukupno} B, stranica odgovora: {stranica}")
+
+
 def demo(bucket):
     s3 = klijent()
 
@@ -64,6 +86,8 @@ def demo(bucket):
     ls(s3, bucket, "izvjestaji/")
     r = s3.list_objects_v2(Bucket=bucket, Delimiter="/")
     print("  prvi nivo (Delimiter='/'):", [p["Prefix"] for p in r.get("CommonPrefixes", [])])
+    print("  ukupna veličina pod 'izvjestaji/':")
+    velicina(s3, bucket, "izvjestaji/")
 
     korak("4. HEAD: metapodaci bez preuzimanja sadržaja; ETag je MD5 sadržaja (za obični PUT)")
     h = s3.head_object(Bucket=bucket, Key="izvjestaji/2026/11/novembar.txt")
@@ -112,6 +136,8 @@ def main(a):
         s3.download_file(bucket, a[2], a[3])
     elif cmd == "ls":
         ls(s3, bucket, a[2] if len(a) > 2 else "")
+    elif cmd == "velicina":
+        velicina(s3, bucket, a[2] if len(a) > 2 else "")
     elif cmd == "rm" and len(a) == 3:
         s3.delete_object(Bucket=bucket, Key=a[2])
     else:
@@ -119,4 +145,11 @@ def main(a):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except ClientError as e:
+        # server je odbio zahtjev (naprimjer upis s ključem samo za čitanje): kratka poruka umjesto ispisa greške
+        sys.exit(f"  {e.response['Error']['Code']}: HTTP {e.response['ResponseMetadata']['HTTPStatusCode']}")
+    except S3UploadFailedError as e:
+        # upload_file grešku servera umotava u svoj izuzetak, pa se hvata odvojeno
+        sys.exit(f"  {e}")

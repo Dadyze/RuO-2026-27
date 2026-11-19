@@ -13,6 +13,7 @@ DIR="$LAB/garage"
 CFG="$DIR/garage.toml"
 BUCKET=ruo-backup
 KLJUC=ruo-backup-kljuc
+KLJUC_R=ruo-citac-kljuc            # drugi ključ: samo čitanje
 g() { garage -c "$CFG" "$@"; }
 gk() { echo "\$ garage $*"; g "$@" >/dev/null; }   # ispis naredbe, izlaz se ne prikazuje
 
@@ -69,6 +70,18 @@ AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
 EOF
   g bucket info "$BUCKET" | sed -n '/KEYS FOR THIS BUCKET/,$p' | sed 's/^/  /'
   echo "  ključ $id -> s6/.lab/garage/s3.env (tajna se ne ispisuje)"
+
+  korak "5. Drugi ključ samo za čitanje (garage bucket allow --read, bez --write)"
+  if ! g key info "$KLJUC_R" >/dev/null 2>&1; then echo "\$ garage key create $KLJUC_R"; g key create "$KLJUC_R" >/dev/null; fi
+  gk bucket allow --read "$BUCKET" --key "$KLJUC_R"
+  info="$(g key info "$KLJUC_R" --show-secret)"
+  id="$(grep -oE 'GK[0-9a-f]{24}' <<<"$info" | head -1)"
+  tajna="$(grep -i 'secret' <<<"$info" | grep -oE '[0-9a-f]{64}' | head -1)"
+  [ -n "$id" ] && [ -n "$tajna" ] || { echo "Ne mogu pročitati ključ iz 'garage key info':"; echo "$info"; exit 1; }
+  # isto okruženje kao s3.env, samo s ključem za čitanje
+  sed -e "s|^AWS_ACCESS_KEY_ID=.*|AWS_ACCESS_KEY_ID=$id|" -e "s|^AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=$tajna|" "$DIR/s3.env" > "$DIR/s3-citac.env"
+  g bucket info "$BUCKET" | sed -n '/KEYS FOR THIS BUCKET/,$p' | sed 's/^/  /'
+  echo "  ključ $id -> s6/.lab/garage/s3-citac.env (tajna se ne ispisuje)"
 }
 
 test_() {
@@ -77,6 +90,16 @@ test_() {
   # nakon layout apply S3 API treba trenutak da prihvati zahtjeve
   for _ in $(seq 20); do python3 s3.py ls "$BUCKET" >/dev/null 2>&1 && break; sleep 0.5; done
   python3 s3.py demo "$BUCKET"
+
+  korak "9. Ključ samo za čitanje: čitanje prolazi, upis pada"
+  python3 s3.py put "$BUCKET" proba.txt /etc/hostname      # glavnim ključem, da ima šta čitati
+  (
+    set -a; source "$DIR/s3-citac.env"; set +a
+    echo "\$ s3.py velicina $BUCKET   (ključ za čitanje)"; python3 s3.py velicina "$BUCKET"
+    echo "\$ s3.py put $BUCKET drugi.txt   (ključ za čitanje)"
+    python3 s3.py put "$BUCKET" drugi.txt /etc/hostname && echo "  upis je prošao (ne bi smio)" || echo "  upis odbijen (očekivano)"
+  )
+  python3 s3.py rm "$BUCKET" proba.txt
 }
 
 status() {
